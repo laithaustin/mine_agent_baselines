@@ -14,7 +14,7 @@ import minerl
 # Parameters:
 TEST_EPISODES = 10  # number of episodes to test the agent for.
 MAX_TEST_EPISODE_LEN = 18000  # 18k is the default for MineRLObtainDiamond.
-N_WOOD_THRESHOLD = 4  # number of wood logs to get before starting script #2.
+N_WOOD_THRESHOLD = 1  # number of wood logs to get before starting script #2.
 
 
 def str_to_act(env, actions):
@@ -102,7 +102,7 @@ def get_action_sequence():
 
 
 def main():
-    env = gym.make('MineRLObtainDiamond-v0')
+    env = gym.make('MineRLObtainDiamondShovel-v0')
 
     # optional interactive mode, where you can connect to your agent and play together (see link for details):
     # https://minerl.io/docs/tutorials/minerl_tools.html#interactive-mode-minerl-interactor
@@ -122,8 +122,14 @@ def main():
             obs, reward, done, _ = env.step(str_to_act(env, action))
             total_reward += reward
             steps += 1
-            if obs['inventory']['log'] >= N_WOOD_THRESHOLD:
-                break
+            logs = ['acacia_log', 'birch_log', 'dark_oak_log', 'jungle_log', 'oak_log', 'spruce_log']
+            for log in logs:
+                count = 0
+                if log in obs['inventory']:
+                    count += obs['inventory'][log]
+                if count >= N_WOOD_THRESHOLD:
+                    done = True
+                    
             if done:
                 break
 
@@ -141,5 +147,4 @@ def main():
     env.close()
 
 
-if __name__ == '__main__':
-    main()
+main()
