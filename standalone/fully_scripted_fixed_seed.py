@@ -90,7 +90,7 @@ def get_action_sequence():
 
 
 def main():
-    env = gym.make('MineRLObtainDiamond-v0')
+    env = gym.make('MineRLObtainDiamondShovel-v0')
 
     # optional interactive mode, where you can connect to your agent and play together (see link for details):
     # https://minerl.io/docs/tutorials/minerl_tools.html#interactive-mode-minerl-interactor
@@ -103,11 +103,13 @@ def main():
 
     for i, action in enumerate(action_sequence):
         obs, reward, done, _ = env.step(str_to_act(env, action))
+        print("STEPPING", i, action, reward)
         if reward > 0:
             print(i, reward)
         if done:
             break
-
+    
+    print(obs['inventory'])
     env.close()
 
 
