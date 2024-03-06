@@ -221,7 +221,7 @@ def get_action_sequence():
 def test():
     action_sequence = get_action_sequence()
     writer = SummaryWriter(f"runs/{experiment_name}")
-    env = gym.make('MineRLObtainDiamond-v0').env
+    env = gym.make('MineRLObtainDiamondShovel-v0').env
     time_limit = min(config["MAX_TEST_EPISODE_LEN"], config["TREECHOP_STEPS"] + len(action_sequence))
     env = gym.wrappers.TimeLimit(env, time_limit)
 
@@ -272,7 +272,7 @@ def main():
     # uncomment the following to upload the logs and videos to Weights and Biases
     # track_exp(project_name="minerl")
 
-    # train()
+    train()
     test()
 
 
