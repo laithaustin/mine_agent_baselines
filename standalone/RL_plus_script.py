@@ -12,6 +12,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from torch.utils.tensorboard import SummaryWriter
 import minerl  # it's important to import minerl after SB3, otherwise model.save doesn't work...
+import torch as th
 
 # If you want to try out wandb integration, scroll to the bottom an uncomment line regarding `track_exp`
 try:
@@ -22,11 +23,12 @@ except ImportError:
 
 # Parameters:
 config = {
-    "TRAIN_TIMESTEPS": 2000000,  # number of steps to train the agent for. At 70 FPS 2m steps take about 8 hours.
+    "TRAIN_TIMESTEPS": 1000,  # number of steps to train the agent for. At 70 FPS 2m steps take about 8 hours.
     "TRAIN_ENV": 'MineRLTreechop-v0',  # training environment for the RL agent. Could use MineRLObtainDiamondDense-v0 here.
+    "TEST_ENV": 'MineRLTreechop-v0',  # evaluation environment for the RL agent.
     "TRAIN_MODEL_NAME": 'potato',  # name to use when saving the trained agent.
     "TEST_MODEL_NAME": 'potato',  # name to use when loading the trained agent.
-    "TEST_EPISODES": 10,  # number of episodes to test the agent for.
+    "TEST_EPISODES": 1,  # number of episodes to test the agent for.
     "MAX_TEST_EPISODE_LEN": 18000,  # 18k is the default for MineRLObtainDiamond.
     "TREECHOP_STEPS": 2000,  # number of steps to run RL lumberjack for in evaluations.
     "RECORD_TRAINING_VIDEOS": False,  # if True, records videos of all episodes done during training.
@@ -142,14 +144,17 @@ class ActionShaping(gym.ActionWrapper):
 
 def train():
     env = DummyVecEnv([make_env(i) for i in range(1)])
+    device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
+    print(f"**********Using device: {device} for training***********")
     # For all the PPO hyperparameters you could tune see this:
     # https://github.com/DLR-RM/stable-baselines3/blob/6f822b9ed7d6e8f57e5a58059923a5b24e8db283/stable_baselines3/ppo/ppo.py#L16
-    model = PPO('CnnPolicy', env, verbose=1, tensorboard_log=f"runs/{experiment_name}")
+    model = PPO('CnnPolicy', env, verbose=1, tensorboard_log=f"runs/{experiment_name}", device=device)
     model.learn(total_timesteps=config["TRAIN_TIMESTEPS"])  # 2m steps is about 8h at 70 FPS
     model.save(config["TRAIN_MODEL_NAME"])
 
     # MineRL might throw an exception when closing on Windows, but it can be ignored (the environment does close).
     try:
+        print('*********Closing environment...')
         env.close()
     except Exception:
         pass
@@ -221,7 +226,7 @@ def get_action_sequence():
 def test():
     action_sequence = get_action_sequence()
     writer = SummaryWriter(f"runs/{experiment_name}")
-    env = gym.make('MineRLObtainDiamondShovel-v0').env
+    env = gym.make(config['TEST_ENV']).env
     time_limit = min(config["MAX_TEST_EPISODE_LEN"], config["TREECHOP_STEPS"] + len(action_sequence))
     env = gym.wrappers.TimeLimit(env, time_limit)
 
@@ -272,7 +277,7 @@ def main():
     # uncomment the following to upload the logs and videos to Weights and Biases
     # track_exp(project_name="minerl")
 
-    train()
+    # train()
     test()
 
 
