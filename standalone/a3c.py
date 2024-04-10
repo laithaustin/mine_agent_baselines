@@ -122,6 +122,8 @@ class A3C(OnPolicyAlgorithm):
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
         self.target_kl = target_kl
+        # using RMSprop as the optimizer
+        self.policy.optimizer = th.optim.RMSprop(self.policy.parameters(), lr=learning_rate)
 
         if _init_setup_model:
             self._setup_model()
@@ -139,78 +141,99 @@ class A3C(OnPolicyAlgorithm):
         #     self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
     class Worker(mp.Process):
-        def __init__(self, worker_id, global_a3c, env, T_max=1000):
+        def __init__(self, worker_id, global_a3c, env, queue, T_max=1000):
             self.worker_id = worker_id
             self.global_a3c = global_a3c
             self.env = env
             self.policy = ActorCriticPolicy(env.observation_space, env.action_space, **global_a3c.policy_kwargs)
             self.T_max = T_max
-
-        def run(self):
             # initial thread step counter
-            t = 0
-            while self.global_a3c.T < self.T_max:
-                # set device
-                self.policy.to(self.global_a3c.device)
-                # set training mode
-                self.policy.set_training_mode(True)
-                t_start = t
-                done = False
-                # get initial state
-                state = self.env.reset()
-                # reset gradients
-                d_theta_actor = 0
-                d_theta_critic = 0
-                # synchronize weights with the global network
-                self.policy.value_net.load_state_dict(self.global_a3c.policy.value_net.state_dict())
-                self.policy.actor_net.load_state_dict(self.global_a3c.policy.actor_net.state_dict())
-                
-                # collect trajectory
-                traj = []
-                while not done and t - t_start < self.T_max:
-                    # perform action according to the policy
-                    action, log_prob, value = self.policy.forward(state)
-                    next_state, reward, done, _ = self.env.step(action)
-                    traj.append((state, action, reward, log_prob, value))
-                    t += 1
-                    self.global_a3c.T += 1
-                    state = next_state
+            self.t = 0
+            # queue to store gradients
+            self.queue = queue
 
-                # bootstrap from last state
-                R = 0 if done else traj[-1][-1]
+        """
+        Since we are using multiprocessing, we will need to run a single episode in each worker, return the gradients
+        and update the global network with the orchestrator. 
+        """
+        def run(self):
+            # set device
+            self.policy.to(self.global_a3c.device)
+            # set training mode
+            self.policy.set_training_mode(True)
+            t_start = self.t
+            done = False
+            # get initial state
+            state = self.env.reset()
+            # reset gradients
+            d_theta_actor = 0
+            d_theta_critic = 0
+            # synchronize weights with the global network
+            self.policy.value_net.load_state_dict(self.global_a3c.policy.value_net.state_dict())
+            self.policy.actor_net.load_state_dict(self.global_a3c.policy.actor_net.state_dict())
+            
+            # collect trajectory
+            traj = []
+            while not done and self.t - t_start < self.T_max:
+                # perform action according to the policy
+                action, log_prob, value = self.policy.forward(state)
+                next_state, reward, done, _ = self.env.step(action)
+                traj.append((state, action, reward, log_prob, value))
+                self.t += 1
+                self.global_a3c.T += 1
+                state = next_state
 
-                # compute R and accumulate gradients
-                for state, action, reward, log_prob, value in traj[::-1]:
-                    R = reward + self.global_a3c.gamma * R
-                    adv = R - value
-                    # compute losses
-                    actor_loss = -adv * log_prob
-                    critic_loss = adv ** 2
-                    # accumulate gradients
-                    d_theta_actor += th.autograd.grad(actor_loss, self.policy.actor_net.parameters())
-                    d_theta_critic += th.autograd.grad(critic_loss, self.policy.value_net.parameters())
-                
-                # add the gradients to the global network 
-                with th.no_grad():
-                    for param, grad in zip(self.global_a3c.policy.actor_net.parameters(), d_theta_actor):
-                        param.grad = grad if param.grad is None else param.grad + grad
-                    for param, grad in zip(self.global_a3c.policy.value_net.parameters(), d_theta_critic):
-                        param.grad = grad if param.grad is None else param.grad + grad
+            # bootstrap from last state
+            R = 0 if done else traj[-1][-1]
 
-                # update the global network
-                self.global_a3c.policy.optimizer.step()
-                self.global_a3c.policy.optimizer.zero_grad()
-                     
+            actor_losses, critic_losses = [], []
+            # compute R and accumulate gradients
+            for state, action, reward, log_prob, value in traj[::-1]:
+                R = reward + self.global_a3c.gamma * R
+                adv = R - value
+                # compute losses
+                actor_loss = -adv * log_prob
+                critic_loss = adv ** 2
+
+                actor_losses.append(actor_loss)
+                critic_losses.append(critic_loss)
+                # accumulate gradients
+                d_theta_actor += th.autograd.grad(actor_loss, self.policy.actor_net.parameters())
+                d_theta_critic += th.autograd.grad(critic_loss, self.policy.value_net.parameters())
+            
+            # add the gradients to the queue
+            self.queue.put(d_theta_actor, d_theta_critic, self.worker_id, self.t, np.mean(actor_losses), np.mean(critic_losses))
 
     def train(self) -> None:
         # Move policy to correct device
         self.policy.to(self.device)
         # train mode on
         self.policy.set_training_mode(True)
-        # create workers and run processes
+        # compute number of processors we can run this on
+        n_workers = mp.cpu_count() if self.worker_threads == -1 else self.worker_threads
+        T = 0
+        T_max = self._total_timesteps
 
+        # create workers and run processes
+        workers = [self.Worker(i, self, self.env, self.queue) for i in range(n_workers)]
+
+        while T < self._total_timesteps:
+            for worker in workers:
+                worker.start()
+
+            for worker in workers:
+                worker.join()
+                d_theta_actor, d_theta_critic, worker_id, t, actor_loss, critic_loss = self.queue.get()
+                # accumulate gradients using optimizer RMSprop
+                self.optimizer.zero_grad()
+                for param, grad in zip(self.policy.actor_net.parameters(), d_theta_actor):
+                    param.grad = grad
+                for param, grad in zip(self.policy.value_net.parameters(), d_theta_critic):
+                    param.grad = grad
+                self.optimizer.step()
+                print(f"Worker {worker_id} step {t}: actor loss {actor_loss}, critic loss {critic_loss}")
 
     def learn(self, total_timesteps: int, callback: MaybeCallback = None, log_interval: int = 4, eval_env: GymEnv = None, eval_freq: int = -1, n_eval_episodes: int = 5, tb_log_name: str = "A3C", eval_log_path: Optional[str] = None, reset_num_timesteps: bool = True) -> "A3C":
         # create multiple workers and organzie them
-        return NotImplementedError
+        return super().learn(total_timesteps, callback, log_interval, eval_env, eval_freq, n_eval_episodes, tb_log_name, eval_log_path, reset_num_timesteps)
 
