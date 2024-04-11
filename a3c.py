@@ -6,7 +6,9 @@ import tqdm
 import threading
 import gym
 import logging
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
+from torchsummary import summary
+th.autograd.set_detect_anomaly(True)
 
 # reduce the amount of observations - code via rl_plus_script.py
 class PovOnlyObservation(gym.ObservationWrapper):
@@ -126,17 +128,17 @@ class A3C_Orchestrator():
         """
         Setup the global and local models for the A3C algorithm.
         """
-        in_channels = self.env.observation_space.shape[0]
+        print(f"observation space: {self.env.observation_space.shape}, action space: {self.env.action_space.n}")
+        in_channels = self.env.observation_space.shape[-1]
         out_channels = 16
         num_actions = self.env.action_space.n
-        self.global_value = ValueCNN(in_channels, out_channels, num_actions)
-        self.global_policy = PolicyCNN(in_channels, out_channels, num_actions)
+        height = self.env.observation_space.shape[0]
+        width = self.env.observation_space.shape[1]
+        self.global_net = ActorCritic(in_channels, out_channels, height, width, num_actions, 0)
         # share memory between processes
-        self.global_value.share_memory()
-        self.global_policy.share_memory()
+        self.global_net.share_memory()
         # define optimizer using RMSProp with shared memory
-        self.optimizer_val = th.optim.RMSprop(self.global_value.parameters(), lr=0.0001)
-        self.optimizer_policy = th.optim.RMSprop(self.global_policy.parameters(), lr=0.0001)
+        self.optimizer = th.optim.RMSprop(self.global_net.parameters(), lr=self.lr)
 
     def train(self):
         """
@@ -148,7 +150,7 @@ class A3C_Orchestrator():
 
         # define workers
         workers = []
-        for _ in range(1):
+        for _ in range(num_processes):
             worker = A3C_Worker(self, _)
             workers.append(worker)
 
@@ -161,8 +163,7 @@ class A3C_Orchestrator():
             worker.join()
 
         # save model
-        th.save(self.global_policy.state_dict(), "policy_model.pth")
-        th.save(self.global_value.state_dict(), "value_model.pth")
+        th.save(self.global_net.state_dict(), "a3c_model.pth")
 
 class A3C_Worker(threading.Thread):
     """
@@ -175,183 +176,181 @@ class A3C_Worker(threading.Thread):
         ):
         super().__init__()
         # initialize local network
-        self.local_value = ValueCNN(glbl.env.observation_space.shape[0], 16, glbl.env.action_space.n)
-        self.local_policy = PolicyCNN(glbl.env.observation_space.shape[0], 16, glbl.env.action_space.n)
+        self.local_net = ActorCritic(glbl.env.observation_space.shape[-1], 16, glbl.env.observation_space.shape[0], glbl.env.observation_space.shape[1], glbl.env.action_space.n, 0)
         self.worker_id = worker_id
         self.env = glbl.env
         self.device = glbl.device
         self.T_max = glbl.T_max
         self.glbl = glbl
         # define optimizers
-        self.optim_val = glbl.optimizer_val
-        self.optim_policy = glbl.optimizer_policy
+        self.optim_local = th.optim.RMSprop(self.local_net.parameters(), lr=glbl.lr)
         # set local counters
         self.t = 0
         self.t_max = 10
 
     def run(self):
+        done = False
+        obs = self.env.reset()
         while self.glbl.T < self.glbl.T_max:
             # reset gradients of the global model
-            self.optim_val.zero_grad()
-            self.optim_policy.zero_grad()
+            self.optim_local.zero_grad()
+            self.glbl.optimizer.zero_grad()
 
             # reset gradients
-            d_policy = 0
-            d_value = 0
+            d_policy = []
+            d_value = []
 
             # sync with global network
-            self.local_policy.load_state_dict(self.glbl.global_policy.state_dict())
-            self.local_value.load_state_dict(self.glbl.global_value.state_dict())
+            self.local_net.load_state_dict(self.glbl.global_net.state_dict())
+            # set to training mode
+            self.local_net.train()
 
-            # reset environment
-            obs = self.env.reset()
-            print(obs)
-            done = False
+            # reset environment if done
+            if done:
+                obs = self.env.reset()
             t_start = self.t
 
             traj = []
             while not done and not self.t - t_start == self.t_max:
-                action, log_prob = self.local_policy(obs, return_prob=True)
+                action, value, log_prob = self.local_net(obs)
                 obs, reward, done, _ = self.env.step(action)
                 self.t += 1
                 self.glbl.T += 1
-                traj.append((obs, action, reward, log_prob))
+                traj.append((obs, action, reward))
             
-            R = 0 if done else self.local_value(obs)
+            R = 0 if done else self.local_net(obs)[1]
 
             for i in range(len(traj) - 1, -1, -1):
-                obs, action, reward, log_prob = traj[i]
-                R = reward + self.glbl.gamma * R
+                # reset gradients
+                self.optim_local.zero_grad()
+                obs, action, reward = traj[i]
+                with th.no_grad():
+                    R = reward + self.glbl.gamma * R
+                action, value, log_prob = self.local_net(obs)
                 # calculate loss
-                adv = R - self.local_value(obs)
-                p_loss = -log_prob * adv
+                adv = R - value
+                p_loss = - log_prob * adv
                 v_loss = adv ** 2
                 # accumulate gradients
-                d_policy += th.autograd.grad(p_loss, self.local_policy.parameters())
-                d_value += th.autograd.grad(v_loss, self.local_value.parameters())
-                # updat local network
-                self.optim_val.step()
-                self.optim_policy.step()
-                print(f"Worker {self.worker_id}, episode {self.glbl.T}, policy_loss: {p_loss}, value_loss: {v_loss}")
+                loss = p_loss + v_loss
+                loss.backward()
+                # update local network
+                self.optim_local.step()
+                # accumulate gradients
+                d_policy += (p.grad.clone() for p in self.local_net.policy.parameters())
+                d_value += (v.grad.clone() for v in self.local_net.value.parameters())
+            print(f"Worker {self.worker_id}, episode {self.glbl.T}, policy_loss: {p_loss}, value_loss: {v_loss}")
             
             with self.glbl.lock:
                 # update global network with mutex lock
-                for p, gp in zip(self.glbl.global_policy.parameters(), d_policy):
-                    p.grad = gp if p.grad is None else p.grad + gp
-                for p, gv in zip(self.glbl.global_value.parameters(), d_value):
-                    p.grad = gv if p.grad is None else p.grad + gv
-
-                self.glbl.optimizer_policy.step()
-                self.glbl.optimizer_val.step()
+                for p, g in zip(self.glbl.global_net.policy.parameters(), d_policy):
+                    p.grad = g if p.grad is None else p.grad + g
+                for v, g in zip(self.glbl.global_net.value.parameters(), d_value):
+                    v.grad = g if v.grad is None else v.grad + g
+                # update global network
+                self.glbl.optimizer.step()
 
         self.glbl.env.close()
 
-class ValueCNN(nn.Module):
+class ActorCritic(nn.Module):
     """
-    Convolutional Neural Network that will be used by the Actor-Critic model. 
-    Should have at least two convolutional layers and two fully connected layers.
-    """
-    def __init__(
-        self, 
-        in_channels, 
-        out_channels, 
-        kernel_size = 3, 
-        stride = 1, 
-        padding = 0
-    ):
-        """
-        Give the model 2 convolutional layers and 2 fully connected layers.
-        """
-        super(ValueCNN, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, stride, padding)
-        self.fc1 = nn.Linear(out_channels, 128)
-        self.fc2 = nn.Linear(128, 1)
-        
-    def forward(self, input):
-        """
-        Forward pass through the model.
-        """
-        x = self.conv1(input)
-        x = self.conv2(th.relu(x))
-        x = x.view(x.size(0), -1)
-        x = self.fc1(th.relu(x))
-        x = self.fc2(th.relu(x))
-        return x
-    
-class PolicyCNN(nn.Module):
-    """
-    Convolutional Neural Network that will be used by the Actor-Critic model. 
-    Should have some CNN layers and output logits for the action space. Also
-    should have a method that returns the action given a state.
+    Model that ouputs value, policy and log probability of the action.
+    Networks will share CNN layers and have separate fully connected layers.
     """
     def __init__(
         self, 
         in_channels, 
-        out_channels, 
-        num_actions,
-        kernel_size = 3, 
-        stride = 1, 
-        padding = 0
+        out_channels,
+        height,
+        width, 
+        num_actions, # shape of the action space,  
+        feature_dim # shape of additional features to include in the model
     ):
-        super(PolicyCNN, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, stride, padding)
-        self.fc1 = nn.Linear(out_channels, 128)
-        self.fc2 = nn.Linear(128, num_actions)
+        super(ActorCritic, self).__init__()
+        # process image data
+        self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
+        self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.flatten = nn.Flatten()
 
-        
-    def forward(self, input, return_prob=False):
-        """
-        Forward pass through the model.
-        """
-        x = self.conv1(input)
-        x = self.conv2(th.relu(x))
-        x = x.view(x.size(0), -1)
-        x = self.fc1(th.relu(x))
-        x = self.fc2(th.relu(x))
-        if return_prob:
-            # return both action and its log probability
-            return th.argmax(th.softmax(x, dim=-1)).item(), th.log_softmax(x, dim=-1)
+        # compute the shape of the flattened output
+        height = (height - 4) // 2 
+        width = (width - 4) // 2 
+        input_shape = out_channels * height * width + feature_dim
+        # process additional features + flatten cnn output
+        self.fc = nn.Linear(input_shape, 128)
+        # separate fully connected layers
+        self.policy = nn.Linear(128, num_actions)
+        self.value = nn.Linear(128, 1)
+
+    def forward(
+        self, 
+        x, 
+        features=None # additional domain-specific features
+    ):
+        # check if input is a tensor
+        if not isinstance(x, th.Tensor):
+            x = th.from_numpy(x.copy()).float().unsqueeze(0) # need to add batch dimension
         else:
-            return th.argmax(th.softmax(x, dim=-1)).item()
+            x = x.float()
+        # reshape so that channels are first
+        x = x.permute(0, 3, 1, 2)
 
+        # pass through CNN layers
+        x = th.relu(self.cnn1(x))
+        x = th.relu(self.cnn2(x))
+        x = self.pool(x)
+        x = self.flatten(x)
+        if features is not None:
+            x = th.cat([x, features], dim=1)
+        x = th.relu(self.fc(x))
 
-def test(env, policy_model_path, num_episodes=10):
+        # return logits for policy, action, and value
+        probs = th.softmax(self.policy(x), dim=-1)
+        action = th.multinomial(probs, num_samples=1).item()
+        value = self.value(x)
+        return action, value, th.log(probs[0, action])
+
+def test(env_name, global_net, num_episodes=10):
     """
     Test the trained model on the environment. Should also record the agent's actions and the environment's state. Also should
     output graphs and the total reward gathered by the agent across multiple episodes.
     """
-    # load model from path
-    policy_model = PolicyCNN(env.observation_space.shape[0], 16, env.action_space.n)
-    policy_model.load_state_dict(th.load(policy_model_path))
-    policy_model.eval()
+    # create environment
+    env = gym.make(env_name)
+    env = PovOnlyObservation(env)
+    env = ActionShaping(env)
 
-    env = gym.make('MineRLTreechop-v0').env
+    global_net.eval()
 
-    for i in tqdm.tqdm(range(num_episodes)):
+    for i in range(num_episodes):
         done = False
         total_reward = 0
         obs = env.reset()
         steps = 0
-        env.render()
+        # env.render()
 
         while not done:
             # get action from model
-            action = policy_model(obs)
+            action, _, _ = global_net(obs)
 
             # take action
             obs, reward, done, _ = env.step(action)
-            env.render()
+            # env.render()
             total_reward += reward
             steps += 1
 
         print(f"Episode {i}, total reward: {total_reward} in {steps} steps.")
 
+    env.close()
+
 if __name__ == "__main__":
     # train the model
-    a3c = A3C_Orchestrator("MineRLTreechop-v0", 100, 4, 1000, 0.99, 0.0001)
-    a3c.train()
-    a3c.env.close()
+    # a3c = A3C_Orchestrator("MineRLBasaltFindCave-v0", 100, 1, 1000, 0.99, 0.00001)
+    # a3c.train()
+    # a3c.env.close()
     # test results on environment
-    # test()
+    a3c = A3C_Orchestrator("MineRLBasaltFindCave-v0", 100, 1, 1000, 0.99, 0.00001)
+    # load weights
+    a3c.global_net.load_state_dict(th.load("a3c_model.pth"))
+    test("MineRLBasaltFindCave-v0", a3c.global_net)
