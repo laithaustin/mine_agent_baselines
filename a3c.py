@@ -19,13 +19,8 @@ class A3C_Orchestrator():
         gamma, 
         lr
     ):
-        # define global network
-        self.global_network = ActorCNNCritic()
-        self.global_network.share_memory()
         # define shared counter
         self.T = 0
-        # define optimizer using RMSProp with shared memory
-        self.optimizer = th.optim.RMSprop(self.global_network.parameters(), lr=0.0001)
         # define device
         self.device = "cpu"
         # define environment
@@ -35,6 +30,24 @@ class A3C_Orchestrator():
         self.T_max = T_max
         self.gamma = gamma
         self.lr = lr
+        # setup models
+        self._setup_models()
+
+    def _setup_models(self):
+        """
+        Setup the global and local models for the A3C algorithm.
+        """
+        in_channels = self.env.observation_space.shape[0]
+        out_channels = 16
+        num_actions = self.env.action_space.n
+        self.global_value = ValueCNN(in_channels, out_channels, num_actions)
+        self.global_policy = PolicyCNN(in_channels, out_channels, num_actions)
+        # share memory between processes
+        self.global_value.share_memory()
+        self.global_policy.share_memory()
+        # define optimizer using RMSProp with shared memory
+        self.optimizer_val = th.optim.RMSprop(self.global_value.parameters(), lr=0.0001)
+        self.optimizer_policy = th.optim.RMSprop(self.global_policy.parameters(), lr=0.0001)
 
     def train(self):
         """
@@ -59,7 +72,8 @@ class A3C_Orchestrator():
             worker.join()
 
         # save model
-        th.save(self.global_network.state_dict(), "a3c_model.pth")
+        th.save(self.global_policy.state_dict(), "policy_model.pth")
+        th.save(self.global_value.state_dict(), "value_model.pth")
 
 class A3C_Worker(mp.Process):
     """
@@ -67,30 +81,36 @@ class A3C_Worker(mp.Process):
     gradients that will update the global network.
     """
     def __init__(self,
-                global_net: A3C_Orchestrator,
+                glbl: A3C_Orchestrator,
                 worker_id,
                 t_max,
         ):
         # initialize local network
-        self.local_net = ActorCNNCritic()
+        self.local_value = ValueCNN(self.glbl.env.observation_space.shape[0], 16, self.glbl.env.action_space.n)
+        self.local_policy = PolicyCNN(self.glbl.env.observation_space.shape[0], 16, self.glbl.env.action_space.n)
         self.worker_id = worker_id
-        self.env = global_net.env
-        self.device = global_net.device
-        self.T_max = global_net.T_max
-        self.global_net = global_net
-        self.global_optim = global_net.optimizer
-        self.optim = th.optim.RMSprop(self.local_net.parameters(), lr=self.global_net.lr)
+        self.env = glbl.env
+        self.device = glbl.device
+        self.T_max = glbl.T_max
+        self.glbl = glbl
+        # define optimizers
+        self.glbl_optim_val = glbl.optimizer
+        self.glbl_optim_policy = glbl.optimizer
+        self.optim_val = glbl.optimizer_val
+        self.optim_policy = glbl.optimizer_policy
+        # set local counters
         self.t = 0
         self.t_max = 10
 
     def run(self):
-        while self.global_net.T < self.global_net.T_max:
+        while self.glbl.T < self.glbl.T_max:
             # reset gradients
             d_policy = 0
             d_value = 0
 
             # sync with global network
-            self.local_net.load_state_dict(self.global_net.state_dict())
+            self.local_policy.load_state_dict(self.glbl.global_policy.state_dict())
+            self.local_value.load_state_dict(self.glbl.global_value.state_dict())
 
             # reset environment
             obs = self.env.reset()
@@ -99,65 +119,115 @@ class A3C_Worker(mp.Process):
 
             traj = []
             while not done and not self.t - t_start == self.t_max:
-                action, log_prob = self.local_net(obs)
+                action, log_prob = self.local_policy(obs, return_prob=True)
                 obs, reward, done, _ = self.env.step(action)
                 self.t += 1
-                self.global_net.T += 1
+                self.glbl.T += 1
                 traj.append((obs, action, reward, log_prob))
             
-            R = 0 if done else self.local_net(obs)
+            R = 0 if done else self.local_value(obs)
 
             for i in range(len(traj) - 1, -1, -1):
                 obs, action, reward, log_prob = traj[i]
-                R = reward + self.global_net.gamma * R
+                R = reward + self.glbl.gamma * R
                 # calculate loss
-                adv = R - self.local_net(obs)
+                adv = R - self.local_value(obs)
                 p_loss = -log_prob * adv
                 v_loss = adv ** 2
                 # accumulate gradients
-                d_policy += th.autograd.grad(p_loss, self.local_net.parameters())
-                d_value += th.autograd.grad(v_loss, self.local_net.parameters())
-
+                d_policy += th.autograd.grad(p_loss, self.local_policy.parameters())
+                d_value += th.autograd.grad(v_loss, self.local_value.parameters())
+                print(f"Worker {self.worker_id}, episode {self.glbl.T}, policy_loss: {p_loss}, value_loss: {v_loss}")
 
             # update global network
-            for p, gp in zip(self.global_net.parameters(), d_policy):
+            for p, gp in zip(self.glbl.global_policy.parameters(), d_policy):
                 p.grad = gp if p.grad is None else p.grad + gp
-            for p, gv in zip(self.global_net.parameters(), d_value):
+            for p, gv in zip(self.glbl.global_value.parameters(), d_value):
                 p.grad = gv if p.grad is None else p.grad + gv
 
-            self.global_optim.step()
-                
-class ActorCNNCritic():
-    """
-    Actor-Critic with value and policy networks that will be used by both the global network and the workers. 
-    Should have two CNN
-    """
-    def __init__(self):
-        pass
+            self.glbl.optimizer_policy.step()
+            self.glbl.optimizer_val.step()
 
-    def forward(self):
-        pass
-
-class CNN(nn.Module):
+class ValueCNN(nn.Module):
     """
     Convolutional Neural Network that will be used by the Actor-Critic model. 
     Should have at least two convolutional layers and two fully connected layers.
     """
-    def __init__(self):
-        pass
+    def __init__(
+        self, 
+        in_channels, 
+        out_channels, 
+        kernel_size = 3, 
+        stride = 1, 
+        padding = 0
+    ):
+        """
+        Give the model 2 convolutional layers and 2 fully connected layers.
+        """
+        super(ValueCNN, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, stride, padding)
+        self.fc1 = nn.Linear(out_channels, 128)
+        self.fc2 = nn.Linear(128, 1)
+        
+    def forward(self, input):
+        """
+        Forward pass through the model.
+        """
+        x = self.conv1(input)
+        x = self.conv2(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc1(x)
+        x = self.fc2(x)
+        return x
+    
+class PolicyCNN(nn.Module):
+    """
+    Convolutional Neural Network that will be used by the Actor-Critic model. 
+    Should have some CNN layers and output logits for the action space. Also
+    should have a method that returns the action given a state.
+    """
+    def __init__(
+        self, 
+        in_channels, 
+        out_channels, 
+        num_actions,
+        kernel_size = 3, 
+        stride = 1, 
+        padding = 0
+    ):
+        super(PolicyCNN, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, stride, padding)
+        self.fc1 = nn.Linear(out_channels, 128)
+        self.fc2 = nn.Linear(128, num_actions)
 
-    def forward(self):
-        pass
+        
+    def forward(self, input, return_prob=False):
+        """
+        Forward pass through the model.
+        """
+        x = self.conv1(input)
+        x = self.conv2(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc1(x)
+        x = self.fc2(x)
+        if return_prob:
+            # return both action and its log probability
+            return th.argmax(th.softmax(x, dim=-1)).item(), th.log_softmax(x, dim=-1)
+        else:
+            return th.argmax(th.softmax(x, dim=-1)).item()
 
-def test(env, model_path, num_episodes=10):
+
+def test(env, policy_model_path, num_episodes=10):
     """
     Test the trained model on the environment. Should also record the agent's actions and the environment's state. Also should
     output graphs and the total reward gathered by the agent across multiple episodes.
     """
-    # load model
-    model = ActorCNNCritic()
-    model.load_state_dict(th.load(model_path))
-    model.eval()
+    # load model from path
+    policy_model = PolicyCNN(env.observation_space.shape[0], 16, env.action_space.n)
+    policy_model.load_state_dict(th.load(policy_model_path))
+    policy_model.eval()
 
     for i in tqdm.tqdm(range(num_episodes)):
         done = False
@@ -168,7 +238,7 @@ def test(env, model_path, num_episodes=10):
 
         while not done:
             # get action from model
-            action = model(obs)
+            action = policy_model(obs)
 
             # take action
             obs, reward, done, _ = env.step(action)
@@ -179,7 +249,8 @@ def test(env, model_path, num_episodes=10):
 
 if __name__ == "__main__":
     # train the model
-    train()
+    a3c = A3C_Orchestrator("MineRLTreechop-v0", 100, 4, 1000, 0.99, 0.0001)
+    a3c.train()
 
     # test results on environment
     test()
