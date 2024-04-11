@@ -3,6 +3,90 @@ import torch as th
 import torch.nn as nn
 import multiprocessing as mp
 import tqdm
+import threading
+import gym
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+# reduce the amount of observations - code via rl_plus_script.py
+class PovOnlyObservation(gym.ObservationWrapper):
+    """
+    Turns the observation space into POV only, ignoring the inventory. This is needed for stable_baselines3 RL agents,
+    as they don't yet support dict observations. The support should be coming soon (as of April 2021).
+    See following PR for details:
+    https://github.com/DLR-RM/stable-baselines3/pull/243
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        self.observation_space = self.env.observation_space['pov']
+
+    def observation(self, observation):
+        return observation['pov']
+# reduce action space - code via rl_plus_script.py  
+class ActionShaping(gym.ActionWrapper):
+    """
+    The default MineRL action space is the following dict:
+
+    Dict(attack:Discrete(2),
+         back:Discrete(2),
+         camera:Box(low=-180.0, high=180.0, shape=(2,)),
+         craft:Enum(crafting_table,none,planks,stick,torch),
+         equip:Enum(air,iron_axe,iron_pickaxe,none,stone_axe,stone_pickaxe,wooden_axe,wooden_pickaxe),
+         forward:Discrete(2),
+         jump:Discrete(2),
+         left:Discrete(2),
+         nearbyCraft:Enum(furnace,iron_axe,iron_pickaxe,none,stone_axe,stone_pickaxe,wooden_axe,wooden_pickaxe),
+         nearbySmelt:Enum(coal,iron_ingot,none),
+         place:Enum(cobblestone,crafting_table,dirt,furnace,none,stone,torch),
+         right:Discrete(2),
+         sneak:Discrete(2),
+         sprint:Discrete(2))
+
+    It can be viewed as:
+         - buttons, like attack, back, forward, sprint that are either pressed or not.
+         - mouse, i.e. the continuous camera action in degrees. The two values are pitch (up/down), where up is
+           negative, down is positive, and yaw (left/right), where left is negative, right is positive.
+         - craft/equip/place actions for items specified above.
+    So an example action could be sprint + forward + jump + attack + turn camera, all in one action.
+
+    This wrapper makes the action space much smaller by selecting a few common actions and making the camera actions
+    discrete. You can change these actions by changing self._actions below. That should just work with the RL agent,
+    but would require some further tinkering below with the BC one.
+    """
+    def __init__(self, env, camera_angle=10, always_attack=False):
+        super().__init__(env)
+
+        self.camera_angle = camera_angle
+        self.always_attack = always_attack
+        self._actions = [
+            [('attack', 1)],
+            [('forward', 1)],
+            # [('back', 1)],
+            # [('left', 1)],
+            # [('right', 1)],
+            # [('jump', 1)],
+            # [('forward', 1), ('attack', 1)],
+            # [('craft', 'planks')],
+            [('forward', 1), ('jump', 1)],
+            [('camera', [-self.camera_angle, 0])],
+            [('camera', [self.camera_angle, 0])],
+            [('camera', [0, self.camera_angle])],
+            [('camera', [0, -self.camera_angle])],
+        ]
+
+        self.actions = []
+        for actions in self._actions:
+            act = self.env.action_space.noop()
+            for a, v in actions:
+                act[a] = v
+            if self.always_attack:
+                act['attack'] = 1
+            self.actions.append(act)
+
+        self.action_space = gym.spaces.Discrete(len(self.actions))
+
+    def action(self, action):
+        return self.actions[action]
 
 class A3C_Orchestrator():
     """
@@ -24,12 +108,17 @@ class A3C_Orchestrator():
         # define device
         self.device = "cpu"
         # define environment
-        self.env = minerl.env.make(env_name)
+        print(f"Creating environment {env_name}")
+        self.env = gym.make(env_name)
+        self.env = PovOnlyObservation(self.env)
+        self.env = ActionShaping(self.env)
         self.num_episodes = num_episodes
         self.num_workers = num_workers
         self.T_max = T_max
         self.gamma = gamma
         self.lr = lr
+        # create lock for shared memory
+        self.lock = threading.Lock()
         # setup models
         self._setup_models()
 
@@ -60,7 +149,7 @@ class A3C_Orchestrator():
         # define workers
         workers = []
         for _ in range(num_processes):
-            worker = A3C_Worker(self, T_max=1000)
+            worker = A3C_Worker(self, _)
             workers.append(worker)
 
         # start workers
@@ -83,8 +172,8 @@ class A3C_Worker(mp.Process):
     def __init__(self,
                 glbl: A3C_Orchestrator,
                 worker_id,
-                t_max,
         ):
+        super().__init__()
         # initialize local network
         self.local_value = ValueCNN(glbl.env.observation_space.shape[0], 16, glbl.env.action_space.n)
         self.local_policy = PolicyCNN(glbl.env.observation_space.shape[0], 16, glbl.env.action_space.n)
@@ -94,8 +183,6 @@ class A3C_Worker(mp.Process):
         self.T_max = glbl.T_max
         self.glbl = glbl
         # define optimizers
-        self.glbl_optim_val = glbl.optimizer
-        self.glbl_optim_policy = glbl.optimizer
         self.optim_val = glbl.optimizer_val
         self.optim_policy = glbl.optimizer_policy
         # set local counters
@@ -129,7 +216,6 @@ class A3C_Worker(mp.Process):
                 self.glbl.T += 1
                 traj.append((obs, action, reward, log_prob))
             
-            self.glbl.env.close()
             R = 0 if done else self.local_value(obs)
 
             for i in range(len(traj) - 1, -1, -1):
@@ -143,15 +229,18 @@ class A3C_Worker(mp.Process):
                 d_policy += th.autograd.grad(p_loss, self.local_policy.parameters())
                 d_value += th.autograd.grad(v_loss, self.local_value.parameters())
                 print(f"Worker {self.worker_id}, episode {self.glbl.T}, policy_loss: {p_loss}, value_loss: {v_loss}")
+            
+            with self.glbl.lock:
+                # update global network with mutex lock
+                for p, gp in zip(self.glbl.global_policy.parameters(), d_policy):
+                    p.grad = gp if p.grad is None else p.grad + gp
+                for p, gv in zip(self.glbl.global_value.parameters(), d_value):
+                    p.grad = gv if p.grad is None else p.grad + gv
 
-            # update global network
-            for p, gp in zip(self.glbl.global_policy.parameters(), d_policy):
-                p.grad = gp if p.grad is None else p.grad + gp
-            for p, gv in zip(self.glbl.global_value.parameters(), d_value):
-                p.grad = gv if p.grad is None else p.grad + gv
+                self.glbl.optimizer_policy.step()
+                self.glbl.optimizer_val.step()
 
-            self.glbl.optimizer_policy.step()
-            self.glbl.optimizer_val.step()
+        self.glbl.env.close()
 
 class ValueCNN(nn.Module):
     """
@@ -234,7 +323,7 @@ def test(env, policy_model_path, num_episodes=10):
     policy_model.load_state_dict(th.load(policy_model_path))
     policy_model.eval()
 
-    env = minerl.env.make('MineRLTreechop-v0')
+    env = gym.make('MineRLTreechop-v0').env
 
     for i in tqdm.tqdm(range(num_episodes)):
         done = False
@@ -259,6 +348,6 @@ if __name__ == "__main__":
     # train the model
     a3c = A3C_Orchestrator("MineRLTreechop-v0", 100, 4, 1000, 0.99, 0.0001)
     a3c.train()
-
+    a3c.env.close()
     # test results on environment
-    test()
+    # test()
