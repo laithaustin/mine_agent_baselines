@@ -86,8 +86,8 @@ class A3C_Worker(mp.Process):
                 t_max,
         ):
         # initialize local network
-        self.local_value = ValueCNN(self.glbl.env.observation_space.shape[0], 16, self.glbl.env.action_space.n)
-        self.local_policy = PolicyCNN(self.glbl.env.observation_space.shape[0], 16, self.glbl.env.action_space.n)
+        self.local_value = ValueCNN(glbl.env.observation_space.shape[0], 16, glbl.env.action_space.n)
+        self.local_policy = PolicyCNN(glbl.env.observation_space.shape[0], 16, glbl.env.action_space.n)
         self.worker_id = worker_id
         self.env = glbl.env
         self.device = glbl.device
@@ -104,6 +104,10 @@ class A3C_Worker(mp.Process):
 
     def run(self):
         while self.glbl.T < self.glbl.T_max:
+            # reset gradients of the global model
+            self.optim_val.zero_grad()
+            self.optim_policy.zero_grad()
+
             # reset gradients
             d_policy = 0
             d_value = 0
@@ -125,6 +129,7 @@ class A3C_Worker(mp.Process):
                 self.glbl.T += 1
                 traj.append((obs, action, reward, log_prob))
             
+            self.glbl.env.close()
             R = 0 if done else self.local_value(obs)
 
             for i in range(len(traj) - 1, -1, -1):
@@ -175,10 +180,10 @@ class ValueCNN(nn.Module):
         Forward pass through the model.
         """
         x = self.conv1(input)
-        x = self.conv2(x)
+        x = self.conv2(th.relu(x))
         x = x.view(x.size(0), -1)
-        x = self.fc1(x)
-        x = self.fc2(x)
+        x = self.fc1(th.relu(x))
+        x = self.fc2(th.relu(x))
         return x
     
 class PolicyCNN(nn.Module):
@@ -208,10 +213,10 @@ class PolicyCNN(nn.Module):
         Forward pass through the model.
         """
         x = self.conv1(input)
-        x = self.conv2(x)
+        x = self.conv2(th.relu(x))
         x = x.view(x.size(0), -1)
-        x = self.fc1(x)
-        x = self.fc2(x)
+        x = self.fc1(th.relu(x))
+        x = self.fc2(th.relu(x))
         if return_prob:
             # return both action and its log probability
             return th.argmax(th.softmax(x, dim=-1)).item(), th.log_softmax(x, dim=-1)
@@ -229,12 +234,14 @@ def test(env, policy_model_path, num_episodes=10):
     policy_model.load_state_dict(th.load(policy_model_path))
     policy_model.eval()
 
+    env = minerl.env.make('MineRLTreechop-v0')
+
     for i in tqdm.tqdm(range(num_episodes)):
         done = False
         total_reward = 0
-        env = minerl.env.make('MineRLTreechop-v0')
         obs = env.reset()
         steps = 0
+        env.render()
 
         while not done:
             # get action from model
@@ -242,6 +249,7 @@ def test(env, policy_model_path, num_episodes=10):
 
             # take action
             obs, reward, done, _ = env.step(action)
+            env.render()
             total_reward += reward
             steps += 1
 
@@ -254,6 +262,3 @@ if __name__ == "__main__":
 
     # test results on environment
     test()
-
-
-
