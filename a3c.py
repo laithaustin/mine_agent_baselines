@@ -148,7 +148,7 @@ class A3C_Orchestrator():
 
         # define workers
         workers = []
-        for _ in range(num_processes):
+        for _ in range(1):
             worker = A3C_Worker(self, _)
             workers.append(worker)
 
@@ -164,7 +164,7 @@ class A3C_Orchestrator():
         th.save(self.global_policy.state_dict(), "policy_model.pth")
         th.save(self.global_value.state_dict(), "value_model.pth")
 
-class A3C_Worker(mp.Process):
+class A3C_Worker(threading.Thread):
     """
     Each worker will have its own instance of environment and accumulate 
     gradients that will update the global network.
@@ -205,6 +205,7 @@ class A3C_Worker(mp.Process):
 
             # reset environment
             obs = self.env.reset()
+            print(obs)
             done = False
             t_start = self.t
 
@@ -228,6 +229,9 @@ class A3C_Worker(mp.Process):
                 # accumulate gradients
                 d_policy += th.autograd.grad(p_loss, self.local_policy.parameters())
                 d_value += th.autograd.grad(v_loss, self.local_value.parameters())
+                # updat local network
+                self.optim_val.step()
+                self.optim_policy.step()
                 print(f"Worker {self.worker_id}, episode {self.glbl.T}, policy_loss: {p_loss}, value_loss: {v_loss}")
             
             with self.glbl.lock:
