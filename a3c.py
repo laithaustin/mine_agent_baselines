@@ -6,6 +6,7 @@ import tqdm
 import threading
 import gym
 import logging
+import numpy as np
 # logging.basicConfig(level=logging.DEBUG)
 from torchsummary import summary
 th.autograd.set_detect_anomaly(True)
@@ -184,12 +185,13 @@ class A3C_Worker(threading.Thread):
         self.optim_local = th.optim.RMSprop(self.local_net.parameters(), lr=glbl.lr)
         # set local counters
         self.t = 0
-        self.t_max = 10
+        self.t_max = 100
 
     def run(self):
         done = False
         obs = self.env.reset()
-        while self.glbl.T < self.glbl.T_max:
+        episode = 0
+        while self.glbl.T < self.glbl.T_max and episode < self.glbl.num_episodes:
             # reset gradients of the global model
             self.optim_local.zero_grad()
             self.glbl.optimizer.zero_grad()
@@ -203,15 +205,16 @@ class A3C_Worker(threading.Thread):
             # set to training mode
             self.local_net.train()
 
-            # reset environment if done
-            if done:
-                obs = self.env.reset()
             t_start = self.t
 
             traj = []
             while not done and not self.t - t_start == self.t_max:
                 action, value, log_prob = self.local_net(obs)
                 obs, reward, done, _ = self.env.step(action)
+                # break out of loop if done
+                if done:
+                    print("***************episode done***************")
+                    break
                 self.t += 1
                 self.glbl.T += 1
                 traj.append((obs, action, reward))
@@ -237,22 +240,32 @@ class A3C_Worker(threading.Thread):
                 # accumulate gradients
                 loss = p_loss + v_loss
                 loss.backward()
+                # clip gradients
+                th.nn.utils.clip_grad_norm_(self.local_net.parameters(), 0.5) # 0.5 is the max norm
                 # update local network
                 self.optim_local.step()
                 # accumulate gradients
                 d_policy += (p.grad.clone() for p in self.local_net.policy.parameters())
                 d_value += (v.grad.clone() for v in self.local_net.value.parameters())
                 
-            print(f"Worker {self.worker_id}, episode {self.glbl.T}, policy_loss: {p_loss}, value_loss: {v_loss}")
+            print(f"episode {episode}, ts {self.t}, p_loss: {p_loss}, v_loss: {v_loss}")
             
-            with self.glbl.lock:
-                # update global network with mutex lock
-                for p, g in zip(self.glbl.global_net.policy.parameters(), d_policy):
-                    p.grad = g if p.grad is None else p.grad + g
-                for v, g in zip(self.glbl.global_net.value.parameters(), d_value):
-                    v.grad = g if v.grad is None else v.grad + g
-                # update global network
-                self.glbl.optimizer.step()
+            # reset done flag
+            if done:
+                done = False
+                obs = self.env.reset()
+                episode += 1
+            
+            if self.t % self.t_max == 0:
+                # normalize gradients
+                with self.glbl.lock:
+                    # update global network with mutex lock
+                    for p, g in zip(self.glbl.global_net.policy.parameters(), d_policy):
+                        p.grad = g / self.t_max if p.grad is None else p.grad + g / self.t_max
+                    for v, g in zip(self.glbl.global_net.value.parameters(), d_value):
+                        v.grad = g if v.grad is None else v.grad + g / self.t_max
+                    # update global network
+                    self.glbl.optimizer.step()
 
         self.glbl.env.close()
 
@@ -351,12 +364,14 @@ def test(env_name, global_net, num_episodes=10):
     env.close()
 
 if __name__ == "__main__":
+    #chopping tree
+    task = "MineRLTreechop-v0"
     # train the model
-    a3c = A3C_Orchestrator("MineRLBasaltFindCave-v0", 10, 1, 2000000, 0.99, 0.0001)
+    a3c = A3C_Orchestrator(task, 10, 1, 200000, 0.99, 0.0001)
     a3c.train()
     a3c.env.close()
     # # test results on environment
-    # a3c = A3C_Orchestrator("MineRLBasaltFindCave-v0", 10, 1, 2000000, 0.99, 0.0001)
+    # a3c = A3C_Orchestrator(task, 10, 1, 2000000, 0.99, 0.0001)
     # # load weights
     # a3c.global_net.load_state_dict(th.load("a3c_model.pth"))
-    # test("MineRLBasaltFindCave-v0", a3c.global_net)
+    # test(task, a3c.global_net)
