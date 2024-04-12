@@ -108,7 +108,7 @@ class A3C_Orchestrator():
         # define shared counter
         self.T = 0
         # define device
-        self.device = "cpu"
+        self.device = "mps"
         # define environment
         print(f"Creating environment {env_name}")
         self.env = gym.make(env_name)
@@ -134,9 +134,7 @@ class A3C_Orchestrator():
         num_actions = self.env.action_space.n
         height = self.env.observation_space.shape[0]
         width = self.env.observation_space.shape[1]
-        self.global_net = ActorCritic(in_channels, out_channels, height, width, num_actions, 0)
-        # share memory between processes
-        self.global_net.share_memory()
+        self.global_net = ActorCritic(in_channels, out_channels, height, width, num_actions, 0, self.device).to(self.device)
         # define optimizer using RMSProp with shared memory
         self.optimizer = th.optim.RMSprop(self.global_net.parameters(), lr=self.lr)
 
@@ -176,7 +174,7 @@ class A3C_Worker(threading.Thread):
         ):
         super().__init__()
         # initialize local network
-        self.local_net = ActorCritic(glbl.env.observation_space.shape[-1], 16, glbl.env.observation_space.shape[0], glbl.env.observation_space.shape[1], glbl.env.action_space.n, 0)
+        self.local_net = ActorCritic(glbl.env.observation_space.shape[-1], 16, glbl.env.observation_space.shape[0], glbl.env.observation_space.shape[1], glbl.env.action_space.n, 0, glbl.device).to(glbl.device)
         self.worker_id = worker_id
         self.env = glbl.env
         self.device = glbl.device
@@ -218,15 +216,20 @@ class A3C_Worker(threading.Thread):
                 self.glbl.T += 1
                 traj.append((obs, action, reward))
             
-            R = 0 if done else self.local_net(obs)[1]
+            with th.no_grad():
+                R = 0 if done else self.local_net(obs)[1]
 
             for i in range(len(traj) - 1, -1, -1):
                 # reset gradients
                 self.optim_local.zero_grad()
                 obs, action, reward = traj[i]
-                with th.no_grad():
-                    R = reward + self.glbl.gamma * R
+                # move to device
+                obs = th.from_numpy(obs.copy()).float().to(self.device)
+                R = reward + self.glbl.gamma * R
                 action, value, log_prob = self.local_net(obs)
+                # move to device
+                log_prob = log_prob.to(self.device)
+                value = value.to(self.device)
                 # calculate loss
                 adv = R - value
                 p_loss = - log_prob * adv
@@ -239,6 +242,7 @@ class A3C_Worker(threading.Thread):
                 # accumulate gradients
                 d_policy += (p.grad.clone() for p in self.local_net.policy.parameters())
                 d_value += (v.grad.clone() for v in self.local_net.value.parameters())
+                
             print(f"Worker {self.worker_id}, episode {self.glbl.T}, policy_loss: {p_loss}, value_loss: {v_loss}")
             
             with self.glbl.lock:
@@ -264,9 +268,11 @@ class ActorCritic(nn.Module):
         height,
         width, 
         num_actions, # shape of the action space,  
-        feature_dim # shape of additional features to include in the model
+        feature_dim, # shape of additional features to include in the model
+        device="cpu"
     ):
         super(ActorCritic, self).__init__()
+        self.device = device
         # process image data
         self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
         self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1)
@@ -290,9 +296,9 @@ class ActorCritic(nn.Module):
     ):
         # check if input is a tensor
         if not isinstance(x, th.Tensor):
-            x = th.from_numpy(x.copy()).float().unsqueeze(0) # need to add batch dimension
+            x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device) # need to add batch dimension
         else:
-            x = x.float()
+            x = x.float().unsqueeze(0).to(self.device)
         # reshape so that channels are first
         x = x.permute(0, 3, 1, 2)
 
@@ -346,11 +352,11 @@ def test(env_name, global_net, num_episodes=10):
 
 if __name__ == "__main__":
     # train the model
-    # a3c = A3C_Orchestrator("MineRLBasaltFindCave-v0", 100, 1, 1000, 0.99, 0.00001)
-    # a3c.train()
-    # a3c.env.close()
-    # test results on environment
-    a3c = A3C_Orchestrator("MineRLBasaltFindCave-v0", 100, 1, 1000, 0.99, 0.00001)
-    # load weights
-    a3c.global_net.load_state_dict(th.load("a3c_model.pth"))
-    test("MineRLBasaltFindCave-v0", a3c.global_net)
+    a3c = A3C_Orchestrator("MineRLBasaltFindCave-v0", 10, 1, 2000000, 0.99, 0.0001)
+    a3c.train()
+    a3c.env.close()
+    # # test results on environment
+    # a3c = A3C_Orchestrator("MineRLBasaltFindCave-v0", 10, 1, 2000000, 0.99, 0.0001)
+    # # load weights
+    # a3c.global_net.load_state_dict(th.load("a3c_model.pth"))
+    # test("MineRLBasaltFindCave-v0", a3c.global_net)
