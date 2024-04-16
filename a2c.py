@@ -5,6 +5,7 @@ import gym
 import numpy as np
 from torchsummary import summary
 import matplotlib.pyplot as plt
+import time
 
 th.autograd.set_detect_anomaly(True)
 
@@ -98,6 +99,7 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
     mean_rewards = []
     global_reward = 0
     episode = 0
+    time_start = time.time()
     while global_step < max_timesteps:
         done = False
         total_reward = 0
@@ -125,12 +127,14 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
         print(f"Episode {episode}, total reward: {total_reward}")
         episode += 1
 
+    print("*********************************************")
+    print(f"Training took {time.time() - time_start} seconds")
     print(f"Mean reward per episode: {global_reward / episode}")
     # save graph of mean rewards over episodes
     plt.plot(mean_rewards)
     plt.xlabel("Episodes")
     plt.ylabel("Mean Rewards")
-    plt.title("Mean Rewards over Episodes")
+    plt.title("Mean Rewards vs Episodes")
     plt.savefig("mean_rewards.png")
     env.close()
     # save model
