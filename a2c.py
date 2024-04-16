@@ -130,6 +130,7 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
     
     global_step = 0
     mean_rewards = []
+    local_rewards_arr = []
     global_reward = 0
     episode = 0
     time_start = time.time()
@@ -170,19 +171,29 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
 
         global_reward += total_reward
         mean_rewards.append(local_rewards / steps)
+        local_rewards_arr.append(local_rewards)
         print(f"Episode {episode}, total reward: {total_reward}")
         episode += 1
 
     print("*********************************************")
     print(f"Training took {time.time() - time_start} seconds")
     print(f"Mean reward per episode: {global_reward / episode}")
+
     # Save graph of mean rewards over episodes
     plt.plot(mean_rewards)
     plt.xlabel("Episodes")
     plt.ylabel("Mean Rewards")
     plt.title("Mean Rewards vs Episodes")
     plt.savefig("mean_rewards.png")
+
+    # Save graph of local rewards over episodes
+    plt.plot(local_rewards_arr)
+    plt.xlabel("Episodes")
+    plt.ylabel("Local Rewards")
+    plt.title("Local Rewards vs Episodes")
+    plt.savefig("local_rewards.png")
     env.close()
+
     # Save model
     th.save({'actor_state_dict': actor.state_dict(), 'critic_state_dict': critic.state_dict()}, "model.pth")
 
