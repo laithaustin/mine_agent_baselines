@@ -52,10 +52,9 @@ class ActionShaping(gym.ActionWrapper):
     def action(self, action):
         return self.actions[action]
 
-# ActorCritic Model
-class ActorCritic(nn.Module):
+class Actor(nn.Module):
     def __init__(self, in_channels, out_channels, height, width, num_actions, device="cpu"):
-        super(ActorCritic, self).__init__()
+        super(Actor, self).__init__()
         self.device = device
         self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
         self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1)
@@ -66,24 +65,56 @@ class ActorCritic(nn.Module):
         input_shape = out_channels * height * width
         self.fc = nn.Linear(input_shape, 128)
         self.policy = nn.Linear(128, num_actions)
-        self.value = nn.Linear(128, 1)
 
     def forward(self, x):
+        x = self.prepare_input(x)
+        x = th.relu(self.fc(x))
+        logits = self.policy(x)
+        probs = th.softmax(logits, dim=-1)
+        action = th.multinomial(probs, num_samples=1).item()
+        log_prob = th.log(probs[0, action])
+        return action, log_prob, probs
+
+    def prepare_input(self, x):
         if not isinstance(x, th.Tensor):
             x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-        else:
-            x = x.float().unsqueeze(0).to(self.device)
-        # x = x.float().unsqueeze(0).to(self.device)
         x = x.permute(0, 3, 1, 2)
         x = th.relu(self.cnn1(x))
         x = th.relu(self.cnn2(x))
         x = self.pool(x)
         x = self.flatten(x)
+        return x
+
+class Critic(nn.Module):
+    def __init__(self, in_channels, out_channels, height, width, device="cpu"):
+        super(Critic, self).__init__()
+        self.device = device
+        # Shared feature extraction layers with the Actor
+        self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
+        self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.flatten = nn.Flatten()
+        height = (height - 4) // 2 
+        width = (width - 4) // 2 
+        input_shape = out_channels * height * width
+        self.fc = nn.Linear(input_shape, 128)
+        self.value = nn.Linear(128, 1)
+
+    def forward(self, x):
+        x = self.prepare_input(x)
         x = th.relu(self.fc(x))
-        probs = th.softmax(self.policy(x), dim=-1)
-        action = th.multinomial(probs, num_samples=1).item()
         value = self.value(x)
-        return action, value, th.log(probs[0, action])
+        return value
+
+    def prepare_input(self, x):
+        if not isinstance(x, th.Tensor):
+            x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
+        x = x.permute(0, 3, 1, 2)
+        x = th.relu(self.cnn1(x))
+        x = th.relu(self.cnn2(x))
+        x = self.pool(x)
+        x = self.flatten(x)
+        return x
 
 # Training Loop
 def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
