@@ -123,8 +123,10 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
     env = ActionShaping(env)
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
-    model = ActorCritic(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
-    optimizer = th.optim.RMSprop(model.parameters(), lr=lr)
+    actor = Actor(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    critic = Critic(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
+    actor_optimizer = th.optim.RMSprop(actor.parameters(), lr=lr)
+    critic_optimizer = th.optim.RMSprop(critic.parameters(), lr=lr)
     
     global_step = 0
     mean_rewards = []
@@ -138,21 +140,34 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
         steps = 0
         local_rewards = 0
         while not done and steps < timesteps:
-            action, value, log_prob = model(obs)
+            action, log_prob, _ = actor(obs)
+            value = critic(obs)
             obs, reward, done, _ = env.step(action)
             total_reward += reward
-            optimizer.zero_grad()
-            _, next_value, _ = model(obs)
-            R = reward + gamma * next_value
-            advantage = R - value
-            policy_loss = -log_prob * advantage.detach()
-            value_loss = advantage.pow(2)
-            loss = policy_loss + value_loss
-            loss.backward()
-            optimizer.step()
-            steps+=1
+
+            # Get the value for the next state
+            with th.no_grad():
+                next_value = critic(obs) if not done else 0
+
+            # Calculate advantage and update models
+            advantage = reward + gamma * next_value - value
+            actor_loss = -log_prob * advantage.detach()
+            critic_loss = advantage.pow(2)
+
+            # Update actor
+            actor_optimizer.zero_grad()
+            actor_loss.backward()
+            actor_optimizer.step()
+
+            # Update critic
+            critic_optimizer.zero_grad()
+            critic_loss.backward()
+            critic_optimizer.step()
+
+            steps += 1
             global_step += 1
             local_rewards += reward
+
         global_reward += total_reward
         mean_rewards.append(local_rewards / steps)
         print(f"Episode {episode}, total reward: {total_reward}")
@@ -161,15 +176,15 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
     print("*********************************************")
     print(f"Training took {time.time() - time_start} seconds")
     print(f"Mean reward per episode: {global_reward / episode}")
-    # save graph of mean rewards over episodes
+    # Save graph of mean rewards over episodes
     plt.plot(mean_rewards)
     plt.xlabel("Episodes")
     plt.ylabel("Mean Rewards")
     plt.title("Mean Rewards vs Episodes")
     plt.savefig("mean_rewards.png")
     env.close()
-    # save model
-    th.save(model.state_dict(), "model.pth")
+    # Save model
+    th.save({'actor_state_dict': actor.state_dict(), 'critic_state_dict': critic.state_dict()}, "model.pth")
 
 def test_a2c():
     env = gym.make("MineRLTreechop-v0")
