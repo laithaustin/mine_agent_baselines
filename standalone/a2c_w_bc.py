@@ -7,8 +7,11 @@ from torchsummary import summary
 import matplotlib.pyplot as plt
 import time
 from tqdm import tqdm
+from models.Actor import Actor
+from models.Critic import Critic
 
 DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines"
+BATCH_SIZE = 5
 
 # Observation Wrapper
 class PovOnlyObservation(gym.ObservationWrapper):
@@ -130,87 +133,38 @@ def dataset_action_batch_to_actions(dataset_actions, camera_margin=5):
             actions[i] = -1
     return actions
 
-class Actor(nn.Module):
-    def __init__(self, in_channels, height, width, num_actions, device="cpu", bc=False):
-        super(Actor, self).__init__()
-        self.device = device
-        self.bc = bc
-        
-        # DQN Nature paper architecture
-        self.cnn1 = nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
-        self.cnn2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.cnn3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.flatten = nn.Flatten()
-
-        # Compute shape by doing one forward pass
-        with th.no_grad():
-            n_flatten = self.flatten(self.cnn3(self.cnn2(self.cnn1(th.zeros(1, in_channels, height, width))))).shape[1]
-
-        self.fc = nn.Linear(n_flatten, 512)  # Adjust the input features to match your input size
-        self.policy = nn.Linear(512, num_actions)
-
-    def forward(self, x):
-        x = self.prepare_input(x)
-        x = th.relu(self.fc(x))
-        logits = self.policy(x)
-        probs = th.softmax(logits, dim=-1)
-        action = th.multinomial(probs, num_samples=1)
-        log_prob = th.log(probs[0, action])
-        return action, log_prob, probs
-
-    def prepare_input(self, x):
-        if not isinstance(x, th.Tensor):
-            x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-        if not self.bc:
-            x = x.permute(0, 3, 1, 2)  # Assume input shape (Batch, Height, Width, Channels)
-        x = th.relu(self.cnn1(x))
-        x = th.relu(self.cnn2(x))
-        x = th.relu(self.cnn3(x))
-        x = self.flatten(x)
-        return x
-
-class Critic(nn.Module):
-    def __init__(self, in_channels, out_channels, height, width, device="cpu"):
-        super(Critic, self).__init__()
-        self.device = device
-        # Shared feature extraction layers with the Actor
-        self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
-        self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.flatten = nn.Flatten()
-        height = (height - 4) // 2 
-        width = (width - 4) // 2 
-        input_shape = out_channels * height * width
-        self.fc = nn.Linear(input_shape, 128)
-        self.value = nn.Linear(128, 1)
-
-    def forward(self, x):
-        x = self.prepare_input(x)
-        x = th.relu(self.fc(x))
-        value = self.value(x)
-        return value
-
-    def prepare_input(self, x):
-        if not isinstance(x, th.Tensor):
-            x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-        x = x.permute(0, 3, 1, 2)
-        x = th.relu(self.cnn1(x))
-        x = th.relu(self.cnn2(x))
-        x = self.pool(x)
-        x = self.flatten(x)
-        return x
+def compute_gae(next_value, rewards, masks, values, gamma=0.99, tau=0.95):
+    values = values + [next_value]
+    gae = 0
+    returns = []
+    for step in reversed(range(len(rewards))):
+        delta = rewards[step] + gamma * values[step + 1] * masks[step] - values[step]
+        gae = delta + gamma * tau * masks[step] * gae
+        returns.insert(0, gae + values[step])
+    return returns
 
 # Training Loop
-def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600, load_model=False):
+def train_a2c(
+        env_name, 
+        max_timesteps, 
+        gamma, 
+        lr,
+        experiment_name="a2c",
+        timesteps=3600,
+        load_model=False
+    ):
+
     env = gym.make(env_name)
     env = PovOnlyObservation(env)
     env = ActionShaping(env)
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
+    critic = Critic(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    
     if load_model:
         actor.load_state_dict(th.load("a2c_bc_model.pth"))
-    critic = Critic(env.observation_space.shape[-1], 64, env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
+
     actor_optimizer = th.optim.RMSprop(actor.parameters(), lr=lr)
     critic_optimizer = th.optim.RMSprop(critic.parameters(), lr=lr)
     
@@ -226,40 +180,67 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600, load_model=Fal
         obs = env.reset()
         steps = 0
         local_rewards = 0
-        while not done and steps < timesteps:
-            action, log_prob, _ = actor(obs)
-            value = critic(obs)
-            obs, reward, done, _ = env.step(action)
-            total_reward += reward
+        rewards = []
+        states = []
+        masks = []
+        values = []
+        log_probs = []
+        actions = []
 
-            # Get the value for the next state
+
+        while not done:
+            # normalize observations and permute shape
+            obs = obs.astype(np.float32) / 255.0
+            state = th.tensor(obs.copy(), dtype=th.float32).to(device)
+            state = state.unsqueeze(0).permute(0, 3, 1, 2)
+            
             with th.no_grad():
-                next_value = critic(obs) if not done else 0
+                action, log_prob, _ = actor(state)
+                value = critic(state)
+            next_obs, reward, done, _ = env.step(action)
 
-            # Calculate advantage and update models
-            advantage = reward + gamma * next_value - value
-            actor_loss = -log_prob * advantage.detach()
-            critic_loss = advantage.pow(2)
+            rewards.append(reward)
+            masks.append(1.0 - done)
+            values.append(value.item())
+            log_probs.append(log_prob)
+            states.append(state)
+            actions.append(action)
 
-            # Update actor
+            obs = next_obs
+            total_reward += reward
+            global_step += 1
+
+            if done:
+                break
+
+        with th.no_grad():
+            next_value = critic(th.tensor(obs, dtype=th.float32).to(device)) if not done else 0
+        returns = compute_gae(next_value, rewards, masks, values, gamma)        
+
+        # update actor and critic
+        for i in range(len(rewards)):
+            value = critic(states[i])
+            log_prob = actor(states[i])[1]
+            advantage = returns[i] - value
+            critic_loss = (returns[i] - value).pow(2).mean()
+            # critic model updates
+            critic_optimizer.zero_grad()
+            critic_loss.backward()
+            critic_optimizer.step()
+            actor_loss = -(log_prob * advantage.detach()).mean()
+            # actor model updates
             actor_optimizer.zero_grad()
             actor_loss.backward()
             actor_optimizer.step()
 
-            # Update critic
-            critic_optimizer.zero_grad()
-            critic_loss.backward()
-            critic_optimizer.step()
-
-            steps += 1
-            global_step += 1
-            local_rewards += reward
-
-        global_reward += total_reward
-        mean_rewards.append(local_rewards / steps)
-        local_rewards_arr.append(local_rewards)
-        print(f"Episode {episode}, total reward: {total_reward}")
         episode += 1
+        print(f"Episode {episode}, total reward: {total_reward}")
+
+        # checkpoint models
+        if episode % 100 == 0:
+            th.save(actor.state_dict(), f"{experiment_name}_actor_{episode}.pth")
+            th.save(critic.state_dict(), f"{experiment_name}_critic_{episode}.pth")
+
 
     print("*********************************************")
     print(f"Training took {time.time() - time_start} seconds")
@@ -280,23 +261,39 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600, load_model=Fal
     plt.savefig("local_rewards.png")
     env.close()
 
-    # Save model
-    th.save({'actor_state_dict': actor.state_dict(), 'critic_state_dict': critic.state_dict()}, "model.pth")
+    # Save models seperately
+    th.save(actor.state_dict(), f"{experiment_name}_actor.pth")
+    th.save(critic.state_dict(), f"{experiment_name}_critic.pth")
 
-def test_a2c():
-    env = gym.make("MineRLTreechop-v0")
+def test_a2c(env_name, episodes, load_model=False):
+    env = gym.make(env_name)
     env = PovOnlyObservation(env)
     env = ActionShaping(env)
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
-    model = ActorCritic(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
-    model.load_state_dict(th.load("model.pth"))
-    model.eval()
-    obs = env.reset()
-    done = False
-    while not done:
-        action, _, _ = model(obs)
-        obs, _, done, _ = env.step(action)
-        env.render()
+    print("Using device: ", device)
+    actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    critic = Critic(env.observation_space.shape[-1], 64, env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
+    if load_model:
+        checkpoint = th.load("model.pth")
+        actor.load_state_dict(checkpoint['actor_state_dict'])
+        critic.load_state_dict(checkpoint['critic_state_dict'])
+    actor.eval()
+    critic.eval()
+
+    global_reward = 0
+    for episode in range(episodes):
+        done = False
+        total_reward = 0
+        obs = env.reset()
+        while not done:
+            action, _, _ = actor(obs)
+            obs, reward, done, _ = env.step(action)
+            total_reward += reward
+        global_reward += total_reward
+        print(f"Episode {episode}, total reward: {total_reward}")
+
+    print("*********************************************")
+    print(f"Mean reward per episode: {global_reward / episodes}")
     env.close()
 
 # pretrain actor with behavioral cloning
@@ -363,12 +360,14 @@ def train_a2c_w_bc(
 
 
 def test_a2c_w_bc():
+    """
+    TODO: complete this function
+    """
     pass
-
 
 if __name__ == "__main__":
     task = "MineRLTreechop-v0"
-    train_a2c_w_bc(DATA_DIR, task, 5, 0.0001)
-    train_a2c(task, 100000, 0.0001, 0.99, 3600, load_model=True)
+    # train_a2c_w_bc(DATA_DIR, task, 5, 0.0001)
+    train_a2c(task, 2000000, .99, 0.0001, 'a2c_bc', 3600, True)
 
 
