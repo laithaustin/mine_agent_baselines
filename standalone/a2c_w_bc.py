@@ -20,7 +20,7 @@ wandb.init(project="minerl-a2c", config={
     "max_timesteps": 2000000,
     "gamma": 0.99,
     "learning_rate": 0.0001,
-    "experiment_name": "a2c_bc",
+    "experiment_name": "a2c_bc_always_attack",
     "timesteps": 3600,
     "load_model": True,
     "entropy_start": 0.5,
@@ -166,19 +166,16 @@ def get_entropy_linear(start, end, current, total_steps):
 
 # Training Loop
 def train_a2c(
-        env_name, 
         max_timesteps, 
         gamma, 
         lr,
+        env,
         experiment_name="a2c",
         timesteps=3600,
         load_model=False,
         entropy_start=0.0 # starting entropy value,
     ):
 
-    env = gym.make(env_name)
-    env = PovOnlyObservation(env)
-    env = ActionShaping(env)
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
     critic = Critic(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
@@ -232,14 +229,14 @@ def train_a2c(
             global_step += 1
             steps += 1
 
-            if done:
-                break
+            if steps >= timesteps:
+                done = True
 
             # log rewards
             wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
             
             # update actor and critic every 10 steps
-            if steps % 10 == 0:
+            if steps % 10 == 0 or done:
                 with th.no_grad():
                     next_value = critic(state) if not done else 0
                 returns = compute_gae(next_value, rewards, masks, values, gamma)        
@@ -251,21 +248,22 @@ def train_a2c(
 
                 # add entropy to loss
                 if entropy_start > 0:
-                    entropy_coef = get_entropy_linear(entropy_start, 0.0, global_step, timesteps)
+                    entropy_coef = get_entropy_linear(entropy_start, 0.0, global_step, max_timesteps)
                 else:
                     entropy_coef = 0.0
                 entropy = -th.mean(-log_probs)
-                # update critic
-                critic_optimizer.zero_grad()
-                critic_loss = advantages.pow(2).mean()
-                critic_loss.backward()
-                critic_optimizer.step()
 
                 # update actor
                 actor_optimizer.zero_grad()
                 actor_loss = -(advantages.detach() * log_probs).mean() + entropy_coef * entropy
                 actor_loss.backward()
                 actor_optimizer.step()
+
+                # update critic
+                critic_optimizer.zero_grad()
+                critic_loss = advantages.pow(2).mean() + entropy_coef * entropy.detach()
+                critic_loss.backward()
+                critic_optimizer.step()
 
                 if steps % 1000 == 0:
                     print(f"Ep: {episode}, TS: {steps}, A_Loss: {actor_loss}, C_Loss: {critic_loss}")
@@ -278,6 +276,9 @@ def train_a2c(
                 values = []
                 log_probs = []
                 actions = []
+
+            if done:
+                break
 
         episode += 1
         print(f"Episode {episode}, total reward: {total_reward}")
@@ -419,9 +420,21 @@ def test_a2c_w_bc():
     """
     pass
 
+def make_env(task, camera_angle=10, always_attack=False, simple_test=False):
+    if simple_test:
+        # test algo on cartpole
+        env = gym.make("CartPole-v1")
+        env = gym.wrappers.TransformReward(env, lambda r: r / 100.0)
+        env = gym.wrappers.FlattenObservation(env)
+        return env
+    env = gym.make(task)
+    env = PovOnlyObservation(env)
+    env = ActionShaping(env, camera_angle, always_attack)
+    return env
+
 if __name__ == "__main__":
-    task = "MineRLTreechop-v0"
+    env = make_env("MineRLTreechop-v0", always_attack=True)
     # train_a2c_w_bc(DATA_DIR, task, 5, 0.0001)
-    train_a2c(task, 2000000, .99, 0.0001, 'a2c_bc', 3600, True, 0.5)
+    train_a2c(2000000, .99, 0.0001, env, 'a2c_bc', 3600, True, 0.5)
 
 
