@@ -15,7 +15,7 @@ DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-
 BATCH_SIZE = 5
 
 # Initialize wandb
-wandb.init(project="minerl-a2c", entity="laithaustin", config={
+wandb.init(project="minerl-a2c", config={
     "task": "MineRLTreechop-v0",
     "max_timesteps": 2000000,
     "gamma": 0.99,
@@ -257,7 +257,7 @@ def train_a2c(
                 entropy = -th.mean(-log_probs)
                 # update critic
                 critic_optimizer.zero_grad()
-                critic_loss = advantages.pow(2).mean() + entropy_coef * entropy
+                critic_loss = advantages.pow(2).mean()
                 critic_loss.backward()
                 critic_optimizer.step()
 
