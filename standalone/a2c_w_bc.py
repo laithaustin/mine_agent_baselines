@@ -131,19 +131,23 @@ def dataset_action_batch_to_actions(dataset_actions, camera_margin=5):
     return actions
 
 class Actor(nn.Module):
-    def __init__(self, in_channels, out_channels, height, width, num_actions, device="cpu", bc=False):
+    def __init__(self, in_channels, height, width, num_actions, device="cpu", bc=False):
         super(Actor, self).__init__()
         self.device = device
-        self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
-        self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.flatten = nn.Flatten()
-        height = (height - 4) // 2 
-        width = (width - 4) // 2 
-        input_shape = out_channels * height * width
-        self.fc = nn.Linear(input_shape, 128)
-        self.policy = nn.Linear(128, num_actions)
         self.bc = bc
+        
+        # DQN Nature paper architecture
+        self.cnn1 = nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
+        self.cnn2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.cnn3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.flatten = nn.Flatten()
+
+        # Compute shape by doing one forward pass
+        with th.no_grad():
+            n_flatten = self.flatten(self.cnn3(self.cnn2(self.cnn1(th.zeros(1, in_channels, height, width))))).shape[1]
+
+        self.fc = nn.Linear(n_flatten, 512)  # Adjust the input features to match your input size
+        self.policy = nn.Linear(512, num_actions)
 
     def forward(self, x):
         x = self.prepare_input(x)
@@ -157,12 +161,11 @@ class Actor(nn.Module):
     def prepare_input(self, x):
         if not isinstance(x, th.Tensor):
             x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-        # account for dimensionality of BC model
         if not self.bc:
-            x = x.permute(0, 3, 1, 2)
+            x = x.permute(0, 3, 1, 2)  # Assume input shape (Batch, Height, Width, Channels)
         x = th.relu(self.cnn1(x))
         x = th.relu(self.cnn2(x))
-        x = self.pool(x)
+        x = th.relu(self.cnn3(x))
         x = self.flatten(x)
         return x
 
@@ -204,7 +207,7 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600, load_model=Fal
     env = ActionShaping(env)
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
-    actor = Actor(env.observation_space.shape[-1], 64, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
     if load_model:
         actor.load_state_dict(th.load("a2c_bc_model.pth"))
     critic = Critic(env.observation_space.shape[-1], 64, env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
@@ -312,7 +315,7 @@ def train_a2c_w_bc(
     # We know ActionShaping has seven discrete actions, so we create
     # a network to map images to seven values (logits), which represent
     # likelihoods of selecting those actions
-    network = Actor(3, 64, 64, 64, 7, device, True).to(device)
+    network = Actor(3, 64, 64, 7, device, True).to(device)
     optimizer = th.optim.Adam(network.parameters(), lr=learning_rate)
     loss_function = nn.CrossEntropyLoss()
 
