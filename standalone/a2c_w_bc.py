@@ -209,6 +209,7 @@ def train_a2c(
             obs = next_obs
             total_reward += reward
             global_step += 1
+            steps += 1
 
             if done:
                 break
@@ -235,6 +236,9 @@ def train_a2c(
 
         episode += 1
         print(f"Episode {episode}, total reward: {total_reward}")
+        global_reward += total_reward
+        mean_rewards.append(total_reward / steps)
+        local_rewards_arr.append(total_reward)
 
         # checkpoint models
         if episode % 100 == 0:
@@ -245,6 +249,8 @@ def train_a2c(
     print("*********************************************")
     print(f"Training took {time.time() - time_start} seconds")
     print(f"Mean reward per episode: {global_reward / episode}")
+    print(f"Total episodes: {episode}")
+    print("Total rewards during training: ", global_reward)
 
     # Save graph of mean rewards over episodes
     plt.plot(mean_rewards)
