@@ -6,8 +6,7 @@ import numpy as np
 from torchsummary import summary
 import matplotlib.pyplot as plt
 import time
-
-th.autograd.set_detect_anomaly(True)
+import tqdm
 
 # Observation Wrapper
 class PovOnlyObservation(gym.ObservationWrapper):
@@ -20,8 +19,38 @@ class PovOnlyObservation(gym.ObservationWrapper):
 
 # Action Wrapper
 class ActionShaping(gym.ActionWrapper):
+    """
+    The default MineRL action space is the following dict:
+
+    Dict(attack:Discrete(2),
+         back:Discrete(2),
+         camera:Box(low=-180.0, high=180.0, shape=(2,)),
+         craft:Enum(crafting_table,none,planks,stick,torch),
+         equip:Enum(air,iron_axe,iron_pickaxe,none,stone_axe,stone_pickaxe,wooden_axe,wooden_pickaxe),
+         forward:Discrete(2),
+         jump:Discrete(2),
+         left:Discrete(2),
+         nearbyCraft:Enum(furnace,iron_axe,iron_pickaxe,none,stone_axe,stone_pickaxe,wooden_axe,wooden_pickaxe),
+         nearbySmelt:Enum(coal,iron_ingot,none),
+         place:Enum(cobblestone,crafting_table,dirt,furnace,none,stone,torch),
+         right:Discrete(2),
+         sneak:Discrete(2),
+         sprint:Discrete(2))
+
+    It can be viewed as:
+         - buttons, like attack, back, forward, sprint that are either pressed or not.
+         - mouse, i.e. the continuous camera action in degrees. The two values are pitch (up/down), where up is
+           negative, down is positive, and yaw (left/right), where left is negative, right is positive.
+         - craft/equip/place actions for items specified above.
+    So an example action could be sprint + forward + jump + attack + turn camera, all in one action.
+
+    This wrapper makes the action space much smaller by selecting a few common actions and making the camera actions
+    discrete. You can change these actions by changing self._actions below. That should just work with the RL agent,
+    but would require some further tinkering below with the BC one.
+    """
     def __init__(self, env, camera_angle=10, always_attack=False):
         super().__init__(env)
+
         self.camera_angle = camera_angle
         self.always_attack = always_attack
         self._actions = [
@@ -39,6 +68,7 @@ class ActionShaping(gym.ActionWrapper):
             [('camera', [0, self.camera_angle])],
             [('camera', [0, -self.camera_angle])],
         ]
+
         self.actions = []
         for actions in self._actions:
             act = self.env.action_space.noop()
@@ -47,10 +77,56 @@ class ActionShaping(gym.ActionWrapper):
             if self.always_attack:
                 act['attack'] = 1
             self.actions.append(act)
+
         self.action_space = gym.spaces.Discrete(len(self.actions))
 
     def action(self, action):
         return self.actions[action]
+
+
+def dataset_action_batch_to_actions(dataset_actions, camera_margin=5):
+    """
+    Turn a batch of actions from dataset (`batch_iter`) to a numpy
+    array that corresponds to batch of actions of ActionShaping wrapper (_actions).
+
+    Camera margin sets the threshold what is considered "moving camera".
+
+    Note: Hardcoded to work for actions in ActionShaping._actions, with "intuitive"
+        ordering of actions.
+        If you change ActionShaping._actions, remember to change this!
+
+    Array elements are integers corresponding to actions, or "-1"
+    for actions that did not have any corresponding discrete match.
+    """
+    # There are dummy dimensions of shape one
+    camera_actions = dataset_actions["camera"].squeeze()
+    attack_actions = dataset_actions["attack"].squeeze()
+    forward_actions = dataset_actions["forward"].squeeze()
+    jump_actions = dataset_actions["jump"].squeeze()
+    batch_size = len(camera_actions)
+    actions = np.zeros((batch_size,), dtype=np.int)
+
+    for i in range(len(camera_actions)):
+        # Moving camera is most important (horizontal first)
+        if camera_actions[i][0] < -camera_margin:
+            actions[i] = 3
+        elif camera_actions[i][0] > camera_margin:
+            actions[i] = 4
+        elif camera_actions[i][1] > camera_margin:
+            actions[i] = 5
+        elif camera_actions[i][1] < -camera_margin:
+            actions[i] = 6
+        elif forward_actions[i] == 1:
+            if jump_actions[i] == 1:
+                actions[i] = 2
+            else:
+                actions[i] = 1
+        elif attack_actions[i] == 1:
+            actions[i] = 0
+        else:
+            # No reasonable mapping (would be no-op)
+            actions[i] = -1
+    return actions
 
 class Actor(nn.Module):
     def __init__(self, in_channels, out_channels, height, width, num_actions, device="cpu"):
@@ -117,13 +193,15 @@ class Critic(nn.Module):
         return x
 
 # Training Loop
-def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
+def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600, load_model=False):
     env = gym.make(env_name)
     env = PovOnlyObservation(env)
     env = ActionShaping(env)
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
     actor = Actor(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    if load_model:
+        actor.load_state_dict(th.load("a2c_bc_model.pth"))
     critic = Critic(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
     actor_optimizer = th.optim.RMSprop(actor.parameters(), lr=lr)
     critic_optimizer = th.optim.RMSprop(critic.parameters(), lr=lr)
@@ -212,6 +290,76 @@ def test_a2c():
         obs, _, done, _ = env.step(action)
         env.render()
     env.close()
+
+# pretrain actor with behavioral cloning
+def train_a2c_w_bc(
+    dir, 
+    task, 
+    epochs, 
+    learning_rate):
+    """
+    Use behavioral cloning to pretrain the actor network before training with A2C.
+    """
+
+    # train actor network with behavioral cloning
+    data = minerl.data.make(task,  data_dir=dir, num_workers=4)
+    device = th.device("cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu")
+    # We know ActionShaping has seven discrete actions, so we create
+    # a network to map images to seven values (logits), which represent
+    # likelihoods of selecting those actions
+    network = Actor(3, 16, 64, 64, 7, device).to(device)
+    optimizer = th.optim.Adam(network.parameters(), lr=learning_rate)
+    loss_function = nn.CrossEntropyLoss()
+
+    iter_count = 0
+    losses = []
+    for dataset_obs, dataset_actions, _, _, _ in tqdm(data.batch_iter(num_epochs=epochs, batch_size=32, seq_len=1)):
+        # We only use pov observations (also remove dummy dimensions)
+        obs = dataset_obs["pov"].squeeze().astype(np.float32)
+        # Transpose observations to be channel-first (BCHW instead of BHWC)
+        obs = obs.transpose(0, 3, 1, 2)
+        # Normalize observations
+        obs /= 255.0
+
+        # Actions need bit more work
+        actions = dataset_action_batch_to_actions(dataset_actions)
+
+        # Remove samples that had no corresponding action
+        mask = actions != -1
+        obs = obs[mask]
+        actions = actions[mask]
+
+        # Obtain logits of each action
+        logits = network(th.from_numpy(obs).float().to(device))
+
+        # Minimize cross-entropy with target labels.
+        # We could also compute the probability of demonstration actions and
+        # maximize them.
+        loss = loss_function(logits, th.from_numpy(actions).long().to(device))
+
+        # Standard PyTorch update
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        iter_count += 1
+        losses.append(loss.item())
+        if (iter_count % 1000) == 0:
+            mean_loss = sum(losses) / len(losses)
+            tqdm.write("Iteration {}. Loss {:<10.3f}".format(iter_count, mean_loss))
+            losses.clear()
+
+    th.save(network.state_dict(), "a2c_bc_model.pth")
+    del data
+    del network
+
+    # train a2c with behavioral cloning
+    train_a2c(task, 2000000, 0.99, 0.0001, timesteps=3600, load_model=True)
+
+
+def test_a2c_w_bc():
+    pass
+
 
 if __name__ == "__main__":
     task = "MineRLTreechop-v0"
