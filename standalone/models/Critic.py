@@ -28,7 +28,7 @@ class Critic(nn.Module):
     def prepare_input(self, x):
         if not isinstance(x, th.Tensor):
             x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-        
+        print(x.shape) 
         x = th.relu(self.cnn1(x))
         x = th.relu(self.cnn2(x))
         x = th.relu(self.cnn3(x))

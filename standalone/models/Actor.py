@@ -27,7 +27,9 @@ class Actor(nn.Module):
         action = None
         if not self.bc:
             probs = th.softmax(probs, dim=-1)
-            action = th.multinomial(probs, num_samples=1).item()
+            action = th.multinomial(probs, num_samples=1)
+            # if there is only one action, we need to just return the item
+            action = action.item() if len(action.shape) == 0 else action
         log_prob = th.log(probs[0, action])
         return action, log_prob, probs
 
