@@ -6,7 +6,9 @@ import numpy as np
 from torchsummary import summary
 import matplotlib.pyplot as plt
 import time
-import tqdm
+from tqdm import tqdm
+
+DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines"
 
 # Observation Wrapper
 class PovOnlyObservation(gym.ObservationWrapper):
@@ -129,7 +131,7 @@ def dataset_action_batch_to_actions(dataset_actions, camera_margin=5):
     return actions
 
 class Actor(nn.Module):
-    def __init__(self, in_channels, out_channels, height, width, num_actions, device="cpu"):
+    def __init__(self, in_channels, out_channels, height, width, num_actions, device="cpu", bc=False):
         super(Actor, self).__init__()
         self.device = device
         self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
@@ -141,20 +143,23 @@ class Actor(nn.Module):
         input_shape = out_channels * height * width
         self.fc = nn.Linear(input_shape, 128)
         self.policy = nn.Linear(128, num_actions)
+        self.bc = bc
 
     def forward(self, x):
         x = self.prepare_input(x)
         x = th.relu(self.fc(x))
         logits = self.policy(x)
         probs = th.softmax(logits, dim=-1)
-        action = th.multinomial(probs, num_samples=1).item()
+        action = th.multinomial(probs, num_samples=1)
         log_prob = th.log(probs[0, action])
         return action, log_prob, probs
 
     def prepare_input(self, x):
         if not isinstance(x, th.Tensor):
             x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-        x = x.permute(0, 3, 1, 2)
+        # account for dimensionality of BC model
+        if not self.bc:
+            x = x.permute(0, 3, 1, 2)
         x = th.relu(self.cnn1(x))
         x = th.relu(self.cnn2(x))
         x = self.pool(x)
@@ -199,10 +204,10 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600, load_model=Fal
     env = ActionShaping(env)
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
-    actor = Actor(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    actor = Actor(env.observation_space.shape[-1], 64, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
     if load_model:
         actor.load_state_dict(th.load("a2c_bc_model.pth"))
-    critic = Critic(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
+    critic = Critic(env.observation_space.shape[-1], 64, env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
     actor_optimizer = th.optim.RMSprop(actor.parameters(), lr=lr)
     critic_optimizer = th.optim.RMSprop(critic.parameters(), lr=lr)
     
@@ -307,7 +312,7 @@ def train_a2c_w_bc(
     # We know ActionShaping has seven discrete actions, so we create
     # a network to map images to seven values (logits), which represent
     # likelihoods of selecting those actions
-    network = Actor(3, 16, 64, 64, 7, device).to(device)
+    network = Actor(3, 64, 64, 64, 7, device, True).to(device)
     optimizer = th.optim.Adam(network.parameters(), lr=learning_rate)
     loss_function = nn.CrossEntropyLoss()
 
@@ -330,7 +335,7 @@ def train_a2c_w_bc(
         actions = actions[mask]
 
         # Obtain logits of each action
-        logits = network(th.from_numpy(obs).float().to(device))
+        logits = network(th.from_numpy(obs).to(device))[-1]
 
         # Minimize cross-entropy with target labels.
         # We could also compute the probability of demonstration actions and
@@ -353,9 +358,6 @@ def train_a2c_w_bc(
     del data
     del network
 
-    # train a2c with behavioral cloning
-    train_a2c(task, 2000000, 0.99, 0.0001, timesteps=3600, load_model=True)
-
 
 def test_a2c_w_bc():
     pass
@@ -363,6 +365,7 @@ def test_a2c_w_bc():
 
 if __name__ == "__main__":
     task = "MineRLTreechop-v0"
-    train_a2c(task, 2000000, 0.99, 0.0001)
+    train_a2c_w_bc(DATA_DIR, task, 5, 0.0001)
+    train_a2c(task, 100000, 0.0001, 0.99, 3600, load_model=True)
 
 
