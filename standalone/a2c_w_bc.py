@@ -9,9 +9,22 @@ import time
 from tqdm import tqdm
 from models.Actor import Actor
 from models.Critic import Critic
+import wandb
 
 DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines"
 BATCH_SIZE = 5
+
+# Initialize wandb
+wandb.init(project="minerl-a2c", entity="laithaustin", config={
+    "task": "MineRLTreechop-v0",
+    "max_timesteps": 2000000,
+    "gamma": 0.99,
+    "learning_rate": 0.0001,
+    "experiment_name": "a2c_bc",
+    "timesteps": 3600,
+    "load_model": True,
+    "entropy_start": 0.5,
+})
 
 # Observation Wrapper
 class PovOnlyObservation(gym.ObservationWrapper):
@@ -133,7 +146,7 @@ def dataset_action_batch_to_actions(dataset_actions, camera_margin=5):
             actions[i] = -1
     return actions
 
-def compute_gae(next_value, rewards, masks, values, gamma=0.99, tau=0.95):
+def compute_gae(next_value, rewards, masks, values, gamma=1.0, tau=0.95):
     values = values + [next_value]
     gae = 0
     returns = []
@@ -143,6 +156,14 @@ def compute_gae(next_value, rewards, masks, values, gamma=0.99, tau=0.95):
         returns.insert(0, gae + values[step])
     return returns
 
+def get_entropy_linear(start, end, current, total_steps):
+    """
+    Linear entropy annealing function.
+    """
+    if current >= total_steps:
+        return end
+    return start + (end - start) * current / total_steps
+
 # Training Loop
 def train_a2c(
         env_name, 
@@ -151,7 +172,8 @@ def train_a2c(
         lr,
         experiment_name="a2c",
         timesteps=3600,
-        load_model=False
+        load_model=False,
+        entropy_start=0.0 # starting entropy value,
     ):
 
     env = gym.make(env_name)
@@ -179,7 +201,6 @@ def train_a2c(
         total_reward = 0
         obs = env.reset()
         steps = 0
-        local_rewards = 0
         rewards = []
         states = []
         masks = []
@@ -214,31 +235,58 @@ def train_a2c(
             if done:
                 break
 
-        with th.no_grad():
-            next_value = critic(th.tensor(obs, dtype=th.float32).to(device)) if not done else 0
-        returns = compute_gae(next_value, rewards, masks, values, gamma)        
+            # log rewards
+            wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
+            
+            # update actor and critic every 10 steps
+            if steps % 10 == 0:
+                with th.no_grad():
+                    next_value = critic(state) if not done else 0
+                returns = compute_gae(next_value, rewards, masks, values, gamma)        
 
-        # update actor and critic
-        for i in range(len(rewards)):
-            value = critic(states[i])
-            log_prob = actor(states[i])[1]
-            advantage = returns[i] - value
-            critic_loss = (returns[i] - value).pow(2).mean()
-            # critic model updates
-            critic_optimizer.zero_grad()
-            critic_loss.backward()
-            critic_optimizer.step()
-            actor_loss = -(log_prob * advantage.detach()).mean()
-            # actor model updates
-            actor_optimizer.zero_grad()
-            actor_loss.backward()
-            actor_optimizer.step()
+                values = critic(th.stack(states).to(device).squeeze())
+                log_probs = actor(th.stack(states).to(device).squeeze())[1]
+                returns = th.tensor(returns, dtype=th.float32).to(device)
+                advantages = returns - values
+
+                # add entropy to loss
+                if entropy_start > 0:
+                    entropy_coef = get_entropy_linear(entropy_start, 0.0, global_step, timesteps)
+                else:
+                    entropy_coef = 0.0
+                entropy = -th.mean(-log_probs)
+                # update critic
+                critic_optimizer.zero_grad()
+                critic_loss = advantages.pow(2).mean() + entropy_coef * entropy
+                critic_loss.backward()
+                critic_optimizer.step()
+
+                # update actor
+                actor_optimizer.zero_grad()
+                actor_loss = -(advantages.detach() * log_probs).mean() + entropy_coef * entropy
+                actor_loss.backward()
+                actor_optimizer.step()
+
+                if steps % 1000 == 0:
+                    print(f"Ep: {episode}, TS: {steps}, A_Loss: {actor_loss}, C_Loss: {critic_loss}")
+                    wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss, "steps": steps, "global_step": global_step})
+                
+                # reset variables
+                rewards = []
+                states = []
+                masks = []
+                values = []
+                log_probs = []
+                actions = []
 
         episode += 1
         print(f"Episode {episode}, total reward: {total_reward}")
         global_reward += total_reward
         mean_rewards.append(total_reward / steps)
         local_rewards_arr.append(total_reward)
+
+        wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step})
+        wandb.log({"mean_reward": total_reward / steps, "global_reward": global_reward})
 
         # checkpoint models
         if episode % 100 == 0:
@@ -374,6 +422,6 @@ def test_a2c_w_bc():
 if __name__ == "__main__":
     task = "MineRLTreechop-v0"
     # train_a2c_w_bc(DATA_DIR, task, 5, 0.0001)
-    train_a2c(task, 2000000, .99, 0.0001, 'a2c_bc', 3600, True)
+    train_a2c(task, 2000000, .99, 0.0001, 'a2c_bc', 3600, True, 0.5)
 
 
