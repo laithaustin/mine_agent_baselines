@@ -14,13 +14,13 @@ import wandb
 DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines"
 BATCH_SIZE = 5
 
-# Initialize wandb
+# Initialize wandb - todo: next experiment will be w/out entropy for value loss
 wandb.init(project="minerl-a2c", config={
     "task": "MineRLTreechop-v0",
     "max_timesteps": 2000000,
     "gamma": 0.99,
     "learning_rate": 0.0001,
-    "experiment_name": "a2c_bc_always_attack",
+    "experiment_name": "a2c_bc_always_attack_ent_actor_loss_update100_normalize_adv",
     "timesteps": 3600,
     "load_model": True,
     "entropy_start": 0.5,
@@ -164,6 +164,25 @@ def get_entropy_linear(start, end, current, total_steps):
         return end
     return start + (end - start) * current / total_steps
 
+def update_timesteps(initial_timesteps, max_timesteps, current_step, total_steps, growth_factor=1.1):
+    """
+    Updates the number of timesteps per episode based on the current training step.
+    
+    :param initial_timesteps: The initial timesteps for each episode.
+    :param max_timesteps: The maximum timesteps an episode can have.
+    :param current_step: The current training step number.
+    :param total_steps: The total number of training steps for the entire training.
+    :param growth_factor: The factor by which timesteps will increase.
+    :return: Updated timesteps for the current episode.
+    """
+    # Calculate the growth rate based on the current step and total steps
+    growth_rate = np.minimum(growth_factor ** (current_step / total_steps), max_timesteps)
+    # Calculate new timesteps
+    new_timesteps = int(initial_timesteps * growth_rate)
+    # Make sure it does not exceed max_timesteps
+    new_timesteps = np.minimum(new_timesteps, max_timesteps)
+    return new_timesteps
+
 # Training Loop
 def train_a2c(
         max_timesteps, 
@@ -204,6 +223,7 @@ def train_a2c(
         values = []
         log_probs = []
         actions = []
+        # timesteps = update_timesteps(timesteps, max_timesteps, global_step, max_timesteps)
 
 
         while not done:
@@ -229,22 +249,26 @@ def train_a2c(
             global_step += 1
             steps += 1
 
-            if steps >= timesteps:
-                done = True
+            # if steps >= timesteps:
+            #     done = True
 
             # log rewards
             wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
             
             # update actor and critic every 10 steps
-            if steps % 10 == 0 or done:
+            if steps % 100 == 0:
                 with th.no_grad():
                     next_value = critic(state) if not done else 0
                 returns = compute_gae(next_value, rewards, masks, values, gamma)        
 
                 values = critic(th.stack(states).to(device).squeeze())
                 log_probs = actor(th.stack(states).to(device).squeeze())[1]
+                # clip log_probs to prevent NaN
+                log_probs = th.clamp(log_probs, -1e10, 1e10)
                 returns = th.tensor(returns, dtype=th.float32).to(device)
                 advantages = returns - values
+                # normalize advantages 
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # add entropy to loss
                 if entropy_start > 0:
@@ -256,13 +280,25 @@ def train_a2c(
                 # update actor
                 actor_optimizer.zero_grad()
                 actor_loss = -(advantages.detach() * log_probs).mean() + entropy_coef * entropy
+                # check for NaN
+                if th.isnan(actor_loss):
+                    print("NaN detected in actor_loss")
+                    print("Actions:", actions)
+                    print("Log probabilities:", log_probs)
+                    print("Advantages:", advantages)
+                    break
+
                 actor_loss.backward()
+                # clip gradients
+                th.nn.utils.clip_grad_norm_(actor.parameters(), 0.5)
                 actor_optimizer.step()
 
                 # update critic
                 critic_optimizer.zero_grad()
-                critic_loss = advantages.pow(2).mean() + entropy_coef * entropy.detach()
+                critic_loss = advantages.pow(2).mean() 
                 critic_loss.backward()
+                # clip gradients
+                th.nn.utils.clip_grad_norm_(critic.parameters(), 0.5)
                 critic_optimizer.step()
 
                 if steps % 1000 == 0:
