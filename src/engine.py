@@ -51,7 +51,7 @@ def train_a2c(
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
     
     if load_model:
-        actor.load_state_dict(th.load("a2c_bc_model.pth"))
+        actor.load_state_dict(th.load("bc_model.pth"))
 
     actor_optimizer = th.optim.RMSprop(actor.parameters(), lr=lr)
     critic_optimizer = th.optim.RMSprop(critic.parameters(), lr=lr)
@@ -144,7 +144,6 @@ def train_a2c(
                     break
                 if abs(actor_loss) > 100:
                     print("Large actor loss detected")
-                    print("Actions:", actions)
                     print("Log probabilities:", log_probs)
                     print("Advantages:", advantages)
                     print("entropy: ", entropy)
@@ -319,7 +318,7 @@ def test_bc(env, episodes, model_path):
 if __name__ == "__main__":
     args = parser.parse_args()
     method = args.method
-    if args.wandb:
+    if args.wandb == True:
         # # Initialize wandb - todo: next experiment will be w/out entropy for value loss
         wandb.init(project="minerl-a2c", config={
             "task": args.task,
@@ -340,7 +339,7 @@ if __name__ == "__main__":
         load_model = args.load_model
         entropy_start = args.entropy_start
         test = args.test
-        print(test)
+        print(f"task: {task}, test: {test}, max_timesteps: {max_timesteps}, gamma: {gamma}, lr: {lr}, experiment_name: {experiment_name}, load_model: {load_model}, entropy_start: {entropy_start}")
 
         env = make_env(task, always_attack=True)
         if not test:

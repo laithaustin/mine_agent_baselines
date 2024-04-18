@@ -23,18 +23,14 @@ class Actor(nn.Module):
     def forward(self, x):
         x = self.prepare_input(x)
         x = th.relu(self.fc(x))
-        probs = self.policy(x)
-        probs = th.softmax(probs, dim=-1)
-        action = th.multinomial(probs, num_samples=1)
-        # if there is only one action, we need to just return the item
-        action = action.item() if len(action.shape) == 0 else action
-        log_prob = th.log(probs[0, action])
-        return action, log_prob, probs
+        probs = th.softmax(self.policy(x), dim=-1)
+        actions = th.multinomial(probs, num_samples=1).squeeze(-1)  # to handle batched actions properly
+        log_probs = th.log(probs[th.arange(probs.size(0)), actions])  # correct indexing for batched log probabilities
+        return actions, log_probs, probs
 
     def prepare_input(self, x):
         if not isinstance(x, th.Tensor):
             x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-
         x = th.relu(self.cnn1(x))
         x = th.relu(self.cnn2(x))
         x = th.relu(self.cnn3(x))

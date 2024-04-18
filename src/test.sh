@@ -10,7 +10,7 @@
 
 # Training A2C with Behavioral Cloning (A2C_BC)
 # Trains the A2C model integrated with Behavioral Cloning on the MineRLTreechop-v0 environment
-python engine.py --task MineRLTreechop-v0 --max_timesteps 2000000 --gamma 0.99 --learning_rate 0.0001 --experiment_name a2c_bc_training --method a2c --test False --load_model True --entropy_start 0.5 --wandb True 
+python engine.py --task MineRLTreechop-v0 --max_timesteps 2000000 --gamma 0.99 --learning_rate 0.0001 --experiment_name a2c_bc_training --method a2c --load_model True --entropy_start 0.5 --wandb False 
 
 # Training both A2C and Behavioral Cloning
 # Optionally train both models separatele
