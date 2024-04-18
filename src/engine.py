@@ -57,7 +57,6 @@ def train_a2c(
     critic_optimizer = th.optim.RMSprop(critic.parameters(), lr=lr)
     
     global_step = 0
-    mean_rewards = []
     local_rewards_arr = []
     global_reward = 0
     episode = 0
@@ -173,11 +172,9 @@ def train_a2c(
         episode += 1
         print(f"Episode {episode}, total reward: {total_reward}")
         global_reward += total_reward
-        mean_rewards.append(total_reward / steps)
         local_rewards_arr.append(total_reward)
 
         wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step})
-        wandb.log({"mean_reward": total_reward / steps, "global_reward": global_reward})
 
         # checkpoint models
         if episode % 100 == 0:
@@ -190,13 +187,6 @@ def train_a2c(
     print(f"Mean reward per episode: {global_reward / episode}")
     print(f"Total episodes: {episode}")
     print("Total rewards during training: ", global_reward)
-
-    # Save graph of mean rewards over episodes
-    plt.plot(mean_rewards)
-    plt.xlabel("Episodes")
-    plt.ylabel("Mean Rewards")
-    plt.title("Mean Rewards vs Episodes")
-    plt.savefig("mean_rewards.png")
 
     # Save graph of local rewards over episodes
     plt.plot(local_rewards_arr)
@@ -350,6 +340,7 @@ if __name__ == "__main__":
         load_model = args.load_model
         entropy_start = args.entropy_start
         test = args.test
+        print(test)
 
         env = make_env(task, always_attack=True)
         if not test:
