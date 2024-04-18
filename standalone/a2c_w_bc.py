@@ -20,7 +20,7 @@ wandb.init(project="minerl-a2c", config={
     "max_timesteps": 2000000,
     "gamma": 0.99,
     "learning_rate": 0.0001,
-    "experiment_name": "a2c_bc_always_attack_ent_actor_loss_update100_normalize_adv",
+    "experiment_name": "a2c_bc_always_attack_ent_actor_loss_update100_normalize_adv_huberloss",
     "timesteps": 3600,
     "load_model": True,
     "entropy_start": 0.5,
@@ -261,7 +261,7 @@ def train_a2c(
                     next_value = critic(state) if not done else 0
                 returns = compute_gae(next_value, rewards, masks, values, gamma)        
 
-                values = critic(th.stack(states).to(device).squeeze())
+                values = critic(th.stack(states).to(device).squeeze()).squeeze()
                 log_probs = actor(th.stack(states).to(device).squeeze())[1]
                 # clip log_probs to prevent NaN
                 log_probs = th.clamp(log_probs, -1e10, 1e10)
@@ -277,6 +277,17 @@ def train_a2c(
                     entropy_coef = 0.0
                 entropy = -th.mean(-log_probs)
 
+                # define huber loss
+                huber_loss = nn.SmoothL1Loss()
+
+                # update critic
+                critic_optimizer.zero_grad()
+                critic_loss = advantages.pow(2).mean() + huber_loss(values, returns)
+                critic_loss.backward()
+                # clip gradients
+                th.nn.utils.clip_grad_norm_(critic.parameters(), 0.5)
+                critic_optimizer.step()
+
                 # update actor
                 actor_optimizer.zero_grad()
                 actor_loss = -(advantages.detach() * log_probs).mean() + entropy_coef * entropy
@@ -287,19 +298,10 @@ def train_a2c(
                     print("Log probabilities:", log_probs)
                     print("Advantages:", advantages)
                     break
-
                 actor_loss.backward()
                 # clip gradients
                 th.nn.utils.clip_grad_norm_(actor.parameters(), 0.5)
                 actor_optimizer.step()
-
-                # update critic
-                critic_optimizer.zero_grad()
-                critic_loss = advantages.pow(2).mean() 
-                critic_loss.backward()
-                # clip gradients
-                th.nn.utils.clip_grad_norm_(critic.parameters(), 0.5)
-                critic_optimizer.step()
 
                 if steps % 1000 == 0:
                     print(f"Ep: {episode}, TS: {steps}, A_Loss: {actor_loss}, C_Loss: {critic_loss}")
