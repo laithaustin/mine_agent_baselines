@@ -64,12 +64,12 @@ class ActionShaping(gym.ActionWrapper):
         self._actions = [
             [('attack', 1)],
             [('forward', 1)],
-            # [('back', 1)],
-            # [('left', 1)],
-            # [('right', 1)],
-            # [('jump', 1)],
-            # [('forward', 1), ('attack', 1)],
-            # [('craft', 'planks')],
+            [('back', 1)],
+            [('left', 1)],
+            [('right', 1)],
+            [('jump', 1)],
+            [('forward', 1), ('attack', 1)],
+            [('craft', 'planks')],
             [('forward', 1), ('jump', 1)],
             [('camera', [-self.camera_angle, 0])],
             [('camera', [self.camera_angle, 0])],
@@ -191,7 +191,7 @@ class A3C_Worker(threading.Thread):
         done = False
         obs = self.env.reset()
         episode = 0
-        while self.glbl.T < self.glbl.T_max and episode < self.glbl.num_episodes:
+        while self.glbl.T < self.glbl.T_max:
             # reset gradients of the global model
             self.optim_local.zero_grad()
             self.glbl.optimizer.zero_grad()
@@ -355,7 +355,7 @@ def test(env_name, global_net, num_episodes=10):
 
             # take action
             obs, reward, done, _ = env.step(action)
-            # env.render()
+            env.render()
             total_reward += reward
             steps += 1
 
@@ -367,11 +367,11 @@ if __name__ == "__main__":
     #chopping tree
     task = "MineRLTreechop-v0"
     # train the model
+    # a3c = A3C_Orchestrator(task, 10, 1, 200000, 0.99, 0.0001)
+    # a3c.train()
+    # a3c.env.close()
+    # test results on environment
     a3c = A3C_Orchestrator(task, 10, 1, 200000, 0.99, 0.0001)
-    a3c.train()
-    a3c.env.close()
-    # # test results on environment
-    # a3c = A3C_Orchestrator(task, 10, 1, 2000000, 0.99, 0.0001)
-    # # load weights
-    # a3c.global_net.load_state_dict(th.load("a3c_model.pth"))
-    # test(task, a3c.global_net)
+    # load weights
+    a3c.global_net.load_state_dict(th.load("a3c_model.pth"))
+    test(task, a3c.global_net)
