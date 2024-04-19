@@ -1,5 +1,25 @@
 import gym
 import numpy as np
+import argparse
+
+def initParser(parser):
+    # initialize arg parser
+    parser = argparse.ArgumentParser(description="A2C with Behavioral Cloning")
+    parser.add_argument("--task", type=str, default="MineRLTreechop-v0", help="Task to train on")
+    parser.add_argument("--max_timesteps", type=int, default=2000000, help="Maximum timesteps to train")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
+    parser.add_argument("--learning_rate", type=float, default=0.0001, help="Learning rate")
+    parser.add_argument("--experiment_name", type=str, default="a2c_bc", help="Name of experiment")
+    parser.add_argument("--method", type=str, default="a2c", help="Method to use (a2c or a2c_bc)")
+    parser.add_argument("--test", type=bool, default=False, help="Test model")
+    parser.add_argument("--epochs", type=int, default=5, help="Number of epochs for behavioral cloning")
+    parser.add_argument('--wandb', type=bool, default=False, help="Use wandb for logging")
+    parser.add_argument("--load_model", type=bool, default=False, help="Load model")
+    parser.add_argument("--entropy_start", type=float, default=0.5, help="Starting entropy value")
+    parser.add_argument('--actor_path', type=str, default="a2c_bc_actor.pth", help="Path to actor model")
+    parser.add_argument('--critic_path', type=str, default="a2c_bc_critic.pth", help="Path to critic model")
+    parser.add_argument('--bc_path', type=str, default="bc_model.pth", help="Path to behavioral cloning model")
+    return parser
 
 def make_env(task, camera_angle=10, always_attack=False, simple_test=False):
     if simple_test:

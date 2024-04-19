@@ -10,26 +10,7 @@ from tqdm import tqdm
 from models.Actor import Actor
 from models.Critic import Critic
 import wandb
-from utils import PovOnlyObservation, ActionShaping, compute_gae, get_entropy_linear, make_env, dataset_action_batch_to_actions
-# arg parser
-import argparse
-
-# initialize arg parser
-parser = argparse.ArgumentParser(description="A2C with Behavioral Cloning")
-parser.add_argument("--task", type=str, default="MineRLTreechop-v0", help="Task to train on")
-parser.add_argument("--max_timesteps", type=int, default=2000000, help="Maximum timesteps to train")
-parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
-parser.add_argument("--learning_rate", type=float, default=0.0001, help="Learning rate")
-parser.add_argument("--experiment_name", type=str, default="a2c_bc", help="Name of experiment")
-parser.add_argument("--method", type=str, default="a2c", help="Method to use (a2c or a2c_bc)")
-parser.add_argument("--test", type=bool, default=False, help="Test model")
-parser.add_argument("--epochs", type=int, default=5, help="Number of epochs for behavioral cloning")
-parser.add_argument('--wandb', type=bool, default=False, help="Use wandb for logging")
-parser.add_argument("--load_model", type=bool, default=False, help="Load model")
-parser.add_argument("--entropy_start", type=float, default=0.5, help="Starting entropy value")
-parser.add_argument('--actor_path', type=str, default="a2c_bc_actor.pth", help="Path to actor model")
-parser.add_argument('--critic_path', type=str, default="a2c_bc_critic.pth", help="Path to critic model")
-parser.add_argument('--bc_path', type=str, default="bc_model.pth", help="Path to behavioral cloning model")
+from utils import PovOnlyObservation, ActionShaping, compute_gae, get_entropy_linear, make_env, dataset_action_batch_to_actions, initParser
 
 DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines"
 BATCH_SIZE = 5
@@ -173,7 +154,7 @@ def train_a2c(
         global_reward += total_reward
         local_rewards_arr.append(total_reward)
 
-        wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step})
+        wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step, "global_reward": global_reward})
 
         # checkpoint models
         if episode % 100 == 0:
@@ -199,12 +180,12 @@ def train_a2c(
     th.save(actor.state_dict(), f"{experiment_name}_actor.pth")
     th.save(critic.state_dict(), f"{experiment_name}_critic.pth")
 
-def test_a2c(env, episodes, load_model=False):
+def test_a2c(env, episodes, experiment_name, load_model=False):
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
     if load_model:
-        actor.load_state_dict(th.load("bc_model.pth"))
+        actor.load_state_dict(th.load(f"{experiment_name}_actor.pth"))
         
     actor.eval()
 
@@ -213,9 +194,16 @@ def test_a2c(env, episodes, load_model=False):
         done = False
         total_reward = 0
         obs = env.reset()
+        # normalize observations and permute shape
+        obs = obs.astype(np.float32) / 255.0
+        state = th.tensor(obs.copy(), dtype=th.float32).to(device)
+        state = state.unsqueeze(0).permute(0, 3, 1, 2)
         while not done:
-            action, _, _ = actor(obs)
+            action, _, _ = actor(state)
             obs, reward, done, _ = env.step(action)
+            obs = obs.astype(np.float32) / 255.0
+            state = th.tensor(obs.copy(), dtype=th.float32).to(device)
+            state = state.unsqueeze(0).permute(0, 3, 1, 2)
             total_reward += reward
         global_reward += total_reward
         print(f"Episode {episode}, total reward: {total_reward}")
@@ -316,6 +304,7 @@ def test_bc(env, episodes, model_path):
     env.close()
 
 if __name__ == "__main__":
+    parser = initParser()
     args = parser.parse_args()
     method = args.method
     if args.wandb == True:
