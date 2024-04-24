@@ -170,12 +170,12 @@ def train_a2c(
     th.save(critic.state_dict(), f"{experiment_name}_critic.pth")
 
 # Test A2C model
-def test_a2c(env, episodes, experiment_name, load_model=False):
+def test_a2c(env, episodes, model_name, load_model=False):
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
     if load_model:
-        actor.load_state_dict(th.load(f"{experiment_name}_actor_10.pth"))
+        actor.load_state_dict(th.load(f"{model_name}.pth"))
         
     actor.eval()
 
@@ -320,13 +320,15 @@ if __name__ == "__main__":
         entropy_start = args.entropy_start
         test = args.test
         annealing = args.annealing
+        model_path = args.model_path
+        episodes = args.episodes
         print(f"task: {task}, test: {test}, max_timesteps: {max_timesteps}, gamma: {gamma}, lr: {lr}, experiment_name: {experiment_name}, load_model: {load_model}, entropy_start: {entropy_start}")
 
         env = make_env(task, always_attack=True)
         if not test:
             train_a2c(max_timesteps, gamma, lr, env, experiment_name, load_model, entropy_start, annealing)
         else:
-            test_a2c(env, 10, load_model)
+            test_a2c(env, episodes, model_path, load_model)
 
     elif method == 'bc':
         task = args.task
