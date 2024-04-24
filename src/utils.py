@@ -2,7 +2,7 @@ import gym
 import numpy as np
 import argparse
 
-def initParser(parser):
+def initParser():
     # initialize arg parser
     parser = argparse.ArgumentParser(description="A2C with Behavioral Cloning")
     parser.add_argument("--task", type=str, default="MineRLTreechop-v0", help="Task to train on")
@@ -19,6 +19,7 @@ def initParser(parser):
     parser.add_argument('--actor_path', type=str, default="a2c_bc_actor.pth", help="Path to actor model")
     parser.add_argument('--critic_path', type=str, default="a2c_bc_critic.pth", help="Path to critic model")
     parser.add_argument('--bc_path', type=str, default="bc_model.pth", help="Path to behavioral cloning model")
+    parser.add_argument('--annealing', type=bool, default=False, help="Anneal entropy")
     return parser
 
 def make_env(task, camera_angle=10, always_attack=False, simple_test=False):
