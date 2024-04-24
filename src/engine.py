@@ -15,7 +15,7 @@ from utils import PovOnlyObservation, ActionShaping, compute_gae, get_entropy_li
 DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines"
 BATCH_SIZE = 5
 
-# Training Loop
+# Training loop for A2C
 def train_a2c(
         max_timesteps, 
         gamma, 
@@ -23,7 +23,8 @@ def train_a2c(
         env,
         experiment_name="a2c",
         load_model=False,
-        entropy_start=0.0 # starting entropy value,
+        entropy_start=0.0, # starting entropy value,
+        annealing=False
     ):
 
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
@@ -53,6 +54,7 @@ def train_a2c(
         values = []
         log_probs = []
         actions = []
+        updates = 0
 
         while not done:
             # normalize observations and permute shape
@@ -81,7 +83,7 @@ def train_a2c(
             wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
             
             # update actor and critic every 10 steps
-            if steps % 100 == 0:
+            if steps % 100 == 0 and total_reward > 0:
                 with th.no_grad():
                     next_value = critic(state) if not done else 0
                 returns = compute_gae(next_value, rewards, masks, values, gamma)        
@@ -97,7 +99,7 @@ def train_a2c(
 
                 # add entropy to loss
                 if entropy_start > 0:
-                    entropy_coef = get_entropy_linear(entropy_start, 0.0, global_step, max_timesteps)
+                    entropy_coef = get_entropy_linear(entropy_start, 0.0, global_step, max_timesteps) if annealing else entropy_start
                 else:
                     entropy_coef = 0.0
                 entropy = -th.mean(-log_probs)
@@ -116,27 +118,14 @@ def train_a2c(
                 # update actor
                 actor_optimizer.zero_grad()
                 actor_loss = -(advantages.detach() * log_probs).mean() + entropy_coef * entropy
-                # check for NaN
-                if th.isnan(actor_loss):
-                    print("NaN detected in actor_loss")
-                    print("Actions:", actions)
-                    print("Log probabilities:", log_probs)
-                    print("Advantages:", advantages)
-                    break
-                if abs(actor_loss) > 100:
-                    print("Large actor loss detected")
-                    print("Log probabilities:", log_probs)
-                    print("Advantages:", advantages)
-                    print("entropy: ", entropy)
-                    break
                 actor_loss.backward()
                 # clip gradients
                 th.nn.utils.clip_grad_norm_(actor.parameters(), 0.5)
                 actor_optimizer.step()
+                # track updates
+                updates += 1
 
-                if steps % 1000 == 0:
-                    print(f"Ep: {episode}, TS: {steps}, A_Loss: {actor_loss}, C_Loss: {critic_loss}")
-                    wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss, "steps": steps, "global_step": global_step})
+                wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss, "steps": steps, "global_step": global_step, "updates": updates})
                 
                 # reset variables
                 rewards = []
@@ -157,7 +146,7 @@ def train_a2c(
         wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step, "global_reward": global_reward})
 
         # checkpoint models
-        if episode % 100 == 0:
+        if episode % 10 == 0:
             th.save(actor.state_dict(), f"{experiment_name}_actor_{episode}.pth")
             th.save(critic.state_dict(), f"{experiment_name}_critic_{episode}.pth")
 
@@ -180,12 +169,13 @@ def train_a2c(
     th.save(actor.state_dict(), f"{experiment_name}_actor.pth")
     th.save(critic.state_dict(), f"{experiment_name}_critic.pth")
 
+# Test A2C model
 def test_a2c(env, episodes, experiment_name, load_model=False):
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
     if load_model:
-        actor.load_state_dict(th.load(f"{experiment_name}_actor.pth"))
+        actor.load_state_dict(th.load(f"{experiment_name}_actor_10.pth"))
         
     actor.eval()
 
@@ -212,7 +202,7 @@ def test_a2c(env, episodes, experiment_name, load_model=False):
     print(f"Mean reward per episode: {global_reward / episodes}")
     env.close()
 
-# pretrain actor with behavioral cloning
+# Training loop for behavioral cloning
 def train_bc(
     dir, 
     task, 
@@ -274,6 +264,7 @@ def train_bc(
     del data
     del network
 
+# Test behavioral cloning model
 def test_bc(env, episodes, model_path):
     # load model from model_path
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
@@ -328,11 +319,12 @@ if __name__ == "__main__":
         load_model = args.load_model
         entropy_start = args.entropy_start
         test = args.test
+        annealing = args.annealing
         print(f"task: {task}, test: {test}, max_timesteps: {max_timesteps}, gamma: {gamma}, lr: {lr}, experiment_name: {experiment_name}, load_model: {load_model}, entropy_start: {entropy_start}")
 
         env = make_env(task, always_attack=True)
         if not test:
-            train_a2c(max_timesteps, gamma, lr, env, experiment_name, load_model, entropy_start)
+            train_a2c(max_timesteps, gamma, lr, env, experiment_name, load_model, entropy_start, annealing)
         else:
             test_a2c(env, 10, load_model)
 
