@@ -12,7 +12,7 @@ from models.Critic import Critic
 import wandb
 from utils import PovOnlyObservation, ActionShaping, compute_gae, get_entropy_linear, make_env, dataset_action_batch_to_actions, initParser
 
-DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines"
+DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src"
 BATCH_SIZE = 5
 
 # Training loop for A2C
