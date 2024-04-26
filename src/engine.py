@@ -52,8 +52,6 @@ def train_a2c(
         states = []
         masks = []
         values = []
-        log_probs = []
-        actions = []
         updates = 0
 
         while not done:
@@ -70,9 +68,7 @@ def train_a2c(
             rewards.append(reward)
             masks.append(1.0 - done)
             values.append(value.item())
-            log_probs.append(log_prob)
             states.append(state)
-            actions.append(action)
 
             obs = next_obs
             total_reward += reward
@@ -132,8 +128,6 @@ def train_a2c(
                 states = []
                 masks = []
                 values = []
-                log_probs = []
-                actions = []
 
             if done:
                 break
