@@ -2,7 +2,7 @@ import torch as th
 import torch.nn as nn
 
 class Critic(nn.Module):
-    def __init__(self, in_channels, height, width, device="cpu"):
+    def __init__(self, in_channels, height, width, device="cpu", num_actions=None):
         super(Critic, self).__init__()
         self.device = device
         
@@ -19,11 +19,30 @@ class Critic(nn.Module):
         self.fc1 = nn.Linear(n_flatten, 512)  # Adjust the input features to match your input size
         self.value = nn.Linear(512, 1)  # Output a single value for the state value
 
-    def forward(self, x):
-        x = self.prepare_input(x)
+        # use q functin for IQL
+        if num_actions is not None:
+            self.fc2 = nn.Linear(n_flatten + num_actions, 512) 
+            self.q = nn.Linear(512, 1)
+
+    def getV(self, x):
         x = th.relu(self.fc1(x))
         value = self.value(x)
         return value
+    
+    def getQ(self, x, action):
+        # append action to the input
+        x = th.cat([x, action], dim=1)
+        x = th.relu(self.fc2(x))
+        q = self.q(x)
+        return q
+
+    def forward(self, x, action=None):
+        x = self.prepare_input(x)
+        if action is None:
+            self.getV(x)
+        else:
+            return self.getQ(x, action)
+
 
     def prepare_input(self, x):
         if not isinstance(x, th.Tensor):
