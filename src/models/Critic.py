@@ -39,7 +39,7 @@ class Critic(nn.Module):
     def forward(self, x, action=None):
         x = self.prepare_input(x)
         if action is None:
-            self.getV(x)
+            return self.getV(x)
         else:
             return self.getQ(x, action)
 
