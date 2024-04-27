@@ -143,7 +143,7 @@ def iq_critic_update(expert_batch, policy_batch, critic, critic_optimizer, batch
     # randomly choose a sample of size batch_size from expert data
     idx = np.random.choice(expert_batch.shape[0], 1, replace=False)
     # should get a sample of batch_size from expert data
-    batch = batch[idx]
+    batch = expert_batch[idx]
     # convert to tensors
     states = th.tensor(batch[:, 0]["pov"].squeeze().astype(np.float32), dtype=th.float32).to(device).permute(0, 3, 1, 2)
     actions = th.tensor(dataset_action_batch_to_actions(batch[:, 1]), dtype=th.float32).to(device)
