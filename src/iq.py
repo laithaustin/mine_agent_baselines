@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import wandb
 import gym
 from multiprocessing import freeze_support
+import os
 
 def grad_pen(expert_states, expert_actions, policy_states, policy_actions, lambda_gp, critic):
     """
@@ -138,23 +139,20 @@ def iq_loss(agent,
     return loss, loss_dict
 
 # IQ-Learn critic update
-def iq_critic_update(data, policy_batch, critic, critic_optimizer, batch_size=100, gamma=0.99, device="cuda"):
-    # sample expert data from dataset
-    iterator = minerl.data.BufferedBatchIter(data)
-    batch = np.array([[s, a, r, ns, d] for s, a, r, ns, d in iterator.buffered_batch_iter(batch_size=1, num_epochs=1)])
-
-    # randomly choose batch_size samples from batch
-    idx = np.random.choice(batch.shape[0], batch_size, replace=False)
+def iq_critic_update(expert_batch, policy_batch, critic, critic_optimizer, batch_size=100, gamma=0.99, device="cuda"):
+    # randomly choose a sample of size batch_size from expert data
+    idx = np.random.choice(expert_batch.shape[0], 1, replace=False)
+    # should get a sample of batch_size from expert data
     batch = batch[idx]
-
     # convert to tensors
-    states = th.tensor(batch[:, 0], dtype=th.float32).to(device).unsqueeze(0).permute(0, 3, 1, 2)
-    actions = th.tensor(batch[:, 1], dtype=th.float32).to(device)
+    states = th.tensor(batch[:, 0]["pov"].squeeze().astype(np.float32), dtype=th.float32).to(device).permute(0, 3, 1, 2)
+    actions = th.tensor(dataset_action_batch_to_actions(batch[:, 1]), dtype=th.float32).to(device)
     rewards = th.tensor(batch[:, 2], dtype=th.float32).to(device)
-    next_states = th.tensor(batch[:, 3], dtype=th.float32).to(device).unsqueeze(0).permute(0, 3, 1, 2)
+    next_states = th.tensor(batch[:, 3]["pov"].squeeze().astype(np.float32), dtype=th.float32).to(device).permute(0, 3, 1, 2)
     dones = th.tensor(batch[:, 4], dtype=th.float32).to(device)
     is_expert = th.tensor(np.ones((rewards.shape[0], 1)), dtype=th.float32).to(device)
     expert_batch = (states, actions, rewards, next_states, dones, is_expert)
+
     # get policy batch
     policy_states, policy_actions, policy_rewards, policy_next_states, policy_dones, policy_is_expert = policy_batch
     # combine policy and expert batches
@@ -197,7 +195,10 @@ def train_a2c_iq(
     critic = Critic(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], device, num_actions=env.action_space.n).to(device)
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
     # load expert data from minerl dataset
-    data = minerl.data.make(task,  data_dir=data_dir, num_workers=4)
+    # get cpu count from os
+    data = minerl.data.make(task,  data_dir=data_dir, num_workers=os.cpu_count()) # todo: update based on cpu cores
+    iterator = minerl.data.BufferedBatchIter(data)
+    expert_data = np.array([[s, a, r, ns, d] for s, a, r, ns, d in iterator.buffered_batch_iter(batch_size=100, num_epochs=1)])
 
     if load_model:
         actor.load_state_dict(th.load("bc_model.pth"))
@@ -249,7 +250,7 @@ def train_a2c_iq(
             steps += 1
 
             # log rewards
-            wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
+            # wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
             
             # update actor and critic every batch_size steps
             if steps % batch_size == 0 and total_reward > 0:
@@ -276,7 +277,7 @@ def train_a2c_iq(
                 # update critic - updated to use IQ loss instead
                 is_expert = th.tensor(np.zeros((len(rewards), 1)), dtype=th.float32).to(device)
                 policy_batch = (th.stack(states).to(device).squeeze(), th.stack(actions).to(device).squeeze(), th.tensor(rewards, dtype=th.float32).to(device), th.stack(next_states).to(device).squeeze(), th.tensor(dones, dtype=th.float32).to(device), is_expert)
-                critic_loss = iq_critic_update(data, policy_batch, critic, critic_optimizer, batch_size=batch_size, gamma=gamma, device=device)
+                critic_loss = iq_critic_update(expert_data, policy_batch, critic, critic_optimizer, batch_size=batch_size, gamma=gamma, device=device)
 
                 # update actor
                 actor_optimizer.zero_grad()
@@ -288,7 +289,8 @@ def train_a2c_iq(
                 # track updates
                 updates += 1
 
-                wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss, "steps": steps, "global_step": global_step, "updates": updates})
+                # wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss, "steps": steps, "global_step": global_step, "updates": updates})
+                print(f"Actor loss: {actor_loss}, Critic loss: {critic_loss}, Steps: {steps}, Global step: {global_step}, Updates: {updates}")
                 
                 # reset variables
                 rewards = []
@@ -304,7 +306,7 @@ def train_a2c_iq(
         global_reward += total_reward
         local_rewards_arr.append(total_reward)
 
-        wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step, "global_reward": global_reward})
+        # wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step, "global_reward": global_reward})
             
         if episode % 10 == 0:
             th.save(actor.state_dict(), f"{experiment_name}_actor_iq_{episode}.pth")
@@ -346,3 +348,18 @@ if __name__ == "__main__":
         entropy_start=0.0,
         annealing=False
     )
+    # # let's first test sampling the expert data
+    # data = minerl.data.make("MineRLTreechop-v0",  data_dir="/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src", num_workers=4)
+    # iterator = minerl.data.BufferedBatchIter(data)
+    # batch = np.array([[s, a, r, ns, d] for s, a, r, ns, d in iterator.buffered_batch_iter(batch_size=100, num_epochs=1)])
+    # # randomly choose batch_size samples from batch
+    # # idx = np.random.choice(batch.shape[0], 100, replace=False)
+    # # batch = batch[idx]
+    # print("batch size: ", len(batch))
+    # # grab first state
+    # state = th.tensor(batch[0, 0]["pov"].squeeze().astype(np.float32), dtype=th.float32).unsqueeze(0).permute(0, 3, 1, 2)
+    # print("state shape: ", state.shape)
+    # # grab actions
+    # print(dataset_action_batch_to_actions(batch[:, 1]).shape)
+    # # actions = th.tensor(dataset_action_batch_to_actions(batch[0, 1]), dtype=th.float32)
+    # # print("actions shape: ", actions.shape)
