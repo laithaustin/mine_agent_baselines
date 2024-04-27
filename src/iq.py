@@ -11,10 +11,11 @@ from models.Critic import Critic
 import numpy as np
 import time
 import minerl
-from utils import dataset_action_batch_to_actions, compute_gae, get_entropy_linear
+from utils import dataset_action_batch_to_actions, compute_gae, get_entropy_linear, make_env
 import matplotlib.pyplot as plt
 import wandb
 import gym
+from multiprocessing import freeze_support
 
 def grad_pen(expert_states, expert_actions, policy_states, policy_actions, lambda_gp, critic):
     """
@@ -193,7 +194,7 @@ def train_a2c_iq(
 
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
-    critic = Critic(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
+    critic = Critic(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], device, num_actions=env.action_space.n).to(device)
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
     # load expert data from minerl dataset
     data = minerl.data.make(task,  data_dir=data_dir, num_workers=4)
@@ -329,17 +330,19 @@ def train_a2c_iq(
     th.save(critic.state_dict(), f"{experiment_name}_critic_iq.pth") 
 
 # Train A2C with IQ-Learn
-env = gym.make("MineRLTreechop-v0")
-train_a2c_iq(
-    max_timesteps=100000, 
-    gamma=0.99, 
-    lr=0.0001, 
-    env=env, 
-    data_dir="data", 
-    batch_size=100, 
-    experiment_name="a2c_iq", 
-    task="MineRLTreechop-v0", 
-    load_model=False,
-    entropy_start=0.0,
-    annealing=False
-)
+if __name__ == "__main__":
+    freeze_support()
+    env = make_env("MineRLTreechop-v0", always_attack=True)
+    train_a2c_iq(
+        max_timesteps=100000, 
+        gamma=0.99, 
+        lr=0.0001, 
+        env=env, 
+        data_dir="/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src", 
+        batch_size=100, 
+        experiment_name="a2c_iq", 
+        task="MineRLTreechop-v0", 
+        load_model=False,
+        entropy_start=0.0,
+        annealing=False
+    )
