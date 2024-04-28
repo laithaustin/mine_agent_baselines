@@ -5,6 +5,7 @@ class Critic(nn.Module):
     def __init__(self, in_channels, height, width, device="cpu", num_actions=None):
         super(Critic, self).__init__()
         self.device = device
+        self.num_actions = num_actions
         
         # DQN Nature paper architecture
         self.cnn1 = nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
@@ -31,6 +32,8 @@ class Critic(nn.Module):
     
     def getQ(self, x, action):
         # append action to the input
+        x = self.prepare_input(x)
+        action = th.zeros((x.shape[0], self.num_actions), device=self.device).scatter(1, action.unsqueeze(1).to(th.int64), 1).to(th.float32)
         x = th.cat([x, action], dim=1)
         x = th.relu(self.fc2(x))
         q = self.q(x)
@@ -40,8 +43,8 @@ class Critic(nn.Module):
         x = self.prepare_input(x)
         if action is None:
             return self.getV(x)
-        else:
-            return self.getQ(x, action)
+        else: # TODO
+            pass
 
 
     def prepare_input(self, x):

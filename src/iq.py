@@ -27,12 +27,12 @@ def grad_pen(expert_states, expert_actions, policy_states, policy_actions, lambd
     policy_states.requires_grad_(True)
     policy_actions.requires_grad_(True)
 
-    expert_Q = critic(expert_states, expert_actions)
-    policy_Q = critic(policy_states, policy_actions)
+    expert_Q = th.tensor(critic.getQ(expert_states, expert_actions), dtype=th.float32, requires_grad=True)
+    policy_Q = th.tensor(critic.getQ(policy_states, policy_actions), dtype=th.float32, requires_grad=True)
 
     # Calculate gradients per data point
-    expert_grad = th.autograd.grad(expert_Q, expert_states, grad_outputs=th.ones_like(expert_Q), create_graph=True, retain_graph=True)[0]
-    policy_grad = th.autograd.grad(policy_Q, policy_states, grad_outputs=th.ones_like(policy_Q), create_graph=True, retain_graph=True)[0]
+    expert_grad = th.autograd.grad(expert_Q, expert_states, grad_outputs=th.ones_like(expert_Q), create_graph=True, retain_graph=True, allow_unused=True)[0]
+    policy_grad = th.autograd.grad(policy_Q, policy_states, grad_outputs=th.ones_like(policy_Q), create_graph=True, retain_graph=True, allow_unused=True)[0]
 
     # Compute per-example norms
     expert_grad_norm = expert_grad.view(expert_grad.size(0), -1).norm(2, dim=1)
@@ -48,21 +48,21 @@ def iq_loss(agent,
             div='hellinger',
             loss_type='value',
             regularize=False,
-            lambda_gp=10.0,  
+            lambda_gp=10.0,
+            gamma=0.99,
+            alpha=0.1
     ):
     """
     IQ Loss function given by authors of the inverse q-learning paper.
     """
 
-    args = agent.args
-    gamma = agent.gamma
     obs, action, env_reward, next_obs, done, is_expert = batch
 
     loss_dict = {}
     # calculate Q(s, a) and V(s')
-    current_Q = agent.critic(obs, action)
-    current_v = agent.critic(next_obs)
-    next_v = agent.critic(next_obs)
+    current_Q = agent.getQ(obs, action)
+    current_v = agent(next_obs)
+    next_v = agent(next_obs)
 
     #  calculate 1st term for IQ loss
     #  -E_(ρ_expert)[Q(s, a) - γV(s')]
@@ -106,32 +106,32 @@ def iq_loss(agent,
         loss_dict['value_loss'] = value_loss.item()
 
     else:
-        raise ValueError(f'This sampling method is not implemented: {args.method.type}')
+        raise ValueError(f'This sampling method is not implemented: {loss_type}')
 
-    # add a gradient penalty to loss (Wasserstein_1 metric)
-    gp_loss = grad_pen(obs[is_expert.squeeze(1), ...],
-                                        action[is_expert.squeeze(1), ...],
-                                        obs[~is_expert.squeeze(1), ...],
-                                        action[~is_expert.squeeze(1), ...],
-                                        lambda_gp, agent)
-    loss_dict['gp_loss'] = gp_loss.item()
-    loss += gp_loss
+    # # add a gradient penalty to loss (Wasserstein_1 metric)
+    # gp_loss = grad_pen(obs[is_expert.squeeze(1), ...],
+    #                                     action[is_expert.squeeze(1), ...],
+    #                                     obs[~is_expert.squeeze(1), ...],
+    #                                     action[~is_expert.squeeze(1), ...],
+    #                                     lambda_gp, agent)
+    # loss_dict['gp_loss'] = gp_loss.item()
+    # loss += gp_loss
 
-    if div == "chi" or args.method.chi:  # TODO: Deprecate method.chi argument for method.div
-        # Use χ2 divergence (calculate the regularization term for IQ loss using expert states) (works offline)
-        y = (1 - done) * gamma * next_v
+    # if div == "chi":  # TODO: Deprecate method.chi argument for method.div
+    #     # Use χ2 divergence (calculate the regularization term for IQ loss using expert states) (works offline)
+    #     y = (1 - done) * gamma * next_v
 
-        reward = current_Q - y
-        chi2_loss = 1/(4 * args.method.alpha) * (reward**2)[is_expert].mean()
-        loss += chi2_loss
-        loss_dict['chi2_loss'] = chi2_loss.item()
+    #     reward = current_Q - y
+    #     chi2_loss = 1/(4 * args.method.alpha) * (reward**2)[is_expert].mean()
+    #     loss += chi2_loss
+    #     loss_dict['chi2_loss'] = chi2_loss.item()
 
     if regularize:
         # Use χ2 divergence (calculate the regularization term for IQ loss using expert and policy states) (works online)
         y = (1 - done) * gamma * next_v
 
         reward = current_Q - y
-        chi2_loss = 1/(4 * args.method.alpha) * (reward**2).mean()
+        chi2_loss = 1/(4 * alpha) * (reward**2).mean()
         loss += chi2_loss
         loss_dict['regularize_loss'] = chi2_loss.item()
 
@@ -143,14 +143,14 @@ def iq_critic_update(expert_batch, policy_batch, critic, critic_optimizer, batch
     # randomly choose a sample of size batch_size from expert data
     idx = np.random.choice(expert_batch.shape[0], 1, replace=False)
     # should get a sample of batch_size from expert data
-    batch = expert_batch[idx]
+    batch = expert_batch[idx].squeeze()
     # convert to tensors
-    states = th.tensor(batch[:, 0]["pov"].squeeze().astype(np.float32), dtype=th.float32).to(device).permute(0, 3, 1, 2)
-    actions = th.tensor(dataset_action_batch_to_actions(batch[:, 1]), dtype=th.float32).to(device)
-    rewards = th.tensor(batch[:, 2], dtype=th.float32).to(device)
-    next_states = th.tensor(batch[:, 3]["pov"].squeeze().astype(np.float32), dtype=th.float32).to(device).permute(0, 3, 1, 2)
-    dones = th.tensor(batch[:, 4], dtype=th.float32).to(device)
-    is_expert = th.tensor(np.ones((rewards.shape[0], 1)), dtype=th.float32).to(device)
+    states = th.tensor(batch[0]["pov"].squeeze().astype(np.float32), dtype=th.float32).to(device).permute(0, 3, 1, 2) / 255.0
+    actions = th.tensor(dataset_action_batch_to_actions(batch[1]), dtype=th.float32).to(device)
+    rewards = th.tensor(batch[2], dtype=th.float32).to(device)
+    next_states = th.tensor(batch[3]["pov"].squeeze().astype(np.float32), dtype=th.float32).to(device).permute(0, 3, 1, 2) / 255.0
+    dones = th.tensor(batch[4], dtype=th.float32).to(device)
+    is_expert = th.tensor(np.ones((rewards.shape[0], 1)), dtype=th.int64).to(device)
     expert_batch = (states, actions, rewards, next_states, dones, is_expert)
 
     # get policy batch
@@ -166,7 +166,7 @@ def iq_critic_update(expert_batch, policy_batch, critic, critic_optimizer, batch
     )
 
     # calculate IQ loss
-    loss, loss_dict = iq_loss(critic, batch, div='kl_fix', loss='value', regularize=False)
+    loss, loss_dict = iq_loss(critic, batch, div='kl_fix', loss_type='value', regularize=False, gamma=gamma, alpha=0.1)
     # update critic
     critic_optimizer.zero_grad()
     loss.backward()
@@ -241,7 +241,7 @@ def train_a2c_iq(
             values.append(value.item())
             states.append(state)
             actions.append(action)
-            next_states.append(th.tensor(next_obs.copy(), dtype=th.float32).to(device).unsqueeze(0).permute(0, 3, 1, 2))
+            next_states.append(th.tensor(next_obs.astype(np.float32) / 255.0, dtype=th.float32).to(device).unsqueeze(0).permute(0, 3, 1, 2))
             dones.append(done)
 
             obs = next_obs
@@ -253,7 +253,7 @@ def train_a2c_iq(
             # wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
             
             # update actor and critic every batch_size steps
-            if steps % batch_size == 0 and total_reward > 0:
+            if steps % batch_size == 0:
                 with th.no_grad():
                     next_value = critic(state) if not done else 0
                 returns = compute_gae(next_value, rewards, masks, values, gamma)        
@@ -275,8 +275,8 @@ def train_a2c_iq(
                 entropy = -th.mean(-log_probs)
 
                 # update critic - updated to use IQ loss instead
-                is_expert = th.tensor(np.zeros((len(rewards), 1)), dtype=th.float32).to(device)
-                policy_batch = (th.stack(states).to(device).squeeze(), th.stack(actions).to(device).squeeze(), th.tensor(rewards, dtype=th.float32).to(device), th.stack(next_states).to(device).squeeze(), th.tensor(dones, dtype=th.float32).to(device), is_expert)
+                is_expert = th.tensor(np.zeros((len(rewards), 1)), dtype=th.int64).to(device)
+                policy_batch = (th.stack(states).to(device).squeeze(), th.stack(actions).to(th.float32).to(device).squeeze(), th.tensor(rewards, dtype=th.float32).to(device), th.stack(next_states).to(device).squeeze(), th.tensor(dones, dtype=th.float32).to(device), is_expert)
                 critic_loss = iq_critic_update(expert_data, policy_batch, critic, critic_optimizer, batch_size=batch_size, gamma=gamma, device=device)
 
                 # update actor
@@ -297,6 +297,9 @@ def train_a2c_iq(
                 states = []
                 masks = []
                 values = []
+                actions = []
+                next_states = []
+                dones = []
 
             if done:
                 break
