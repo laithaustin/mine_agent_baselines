@@ -289,8 +289,7 @@ def train_a2c_iq(
                 # track updates
                 updates += 1
 
-                # wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss, "steps": steps, "global_step": global_step, "updates": updates})
-                print(f"Actor loss: {actor_loss}, Critic loss: {critic_loss}, Steps: {steps}, Global step: {global_step}, Updates: {updates}")
+                wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss, "steps": steps, "global_step": global_step, "updates": updates})
                 
                 # reset variables
                 rewards = []
@@ -309,7 +308,7 @@ def train_a2c_iq(
         global_reward += total_reward
         local_rewards_arr.append(total_reward)
 
-        # wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step, "global_reward": global_reward})
+        wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step, "global_reward": global_reward})
             
         if episode % 10 == 0:
             th.save(actor.state_dict(), f"{experiment_name}_actor_iq_{episode}.pth")
@@ -338,9 +337,19 @@ def train_a2c_iq(
 if __name__ == "__main__":
     freeze_support()
     env = make_env("MineRLTreechop-v0", always_attack=True)
+    wandb.init(project="minerl-a2c-iql", config={
+        "task": "MineRLTreechop-v0",
+        "max_timesteps": 2000000,
+        "gamma": 0.9999,
+        "learning_rate": 0.0001,
+        "experiment_name": "a2c_iq",
+        "load_model": False,
+        "entropy_start": 0.5,
+        "annealing": False
+    })
     train_a2c_iq(
-        max_timesteps=100000, 
-        gamma=0.99, 
+        max_timesteps=2000000, 
+        gamma=0.9999, 
         lr=0.0001, 
         env=env, 
         data_dir="/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src", 
@@ -348,7 +357,7 @@ if __name__ == "__main__":
         experiment_name="a2c_iq", 
         task="MineRLTreechop-v0", 
         load_model=False,
-        entropy_start=0.0,
+        entropy_start=0.5,
         annealing=False
     )
     # # let's first test sampling the expert data
