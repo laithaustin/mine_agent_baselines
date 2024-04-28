@@ -57,12 +57,13 @@ if __name__ == "__main__":
         task = args.task
         lr = args.learning_rate
         epochs = args.epochs
+        model_path = args.model_path
         env = make_env(task, always_attack=True)
         test = args.test
         if not test:
             train_bc(DATA_DIR, task, epochs, lr)
         else:
-            test_bc(env, 10, "a2c_bc_model.pth")
+            test_bc(env, 10, model_path= model_path)
 
     # env = make_env("MineRLTreechop-v0", always_attack=True)
     # train_bc(DATA_DIR, task, 5, 0.0001)
