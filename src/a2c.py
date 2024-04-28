@@ -1,135 +1,38 @@
-import minerl
+import time
+import numpy as np
 import torch as th
 import torch.nn as nn
-import gym
-import numpy as np
-from torchsummary import summary
 import matplotlib.pyplot as plt
-import time
+import wandb
+from models.Actor import Actor
+from models.Critic import Critic
+from utils import compute_gae, get_entropy_linear
+import minerl
 
-th.autograd.set_detect_anomaly(True)
+# Training loop for A2C
+def train_a2c(
+        max_timesteps, 
+        gamma, 
+        lr,
+        env,
+        experiment_name="a2c",
+        load_model=False,
+        entropy_start=0.0, # starting entropy value,
+        annealing=False
+    ):
 
-# Observation Wrapper
-class PovOnlyObservation(gym.ObservationWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        self.observation_space = self.env.observation_space['pov']
-
-    def observation(self, observation):
-        return observation['pov']
-
-# Action Wrapper
-class ActionShaping(gym.ActionWrapper):
-    def __init__(self, env, camera_angle=10, always_attack=False):
-        super().__init__(env)
-        self.camera_angle = camera_angle
-        self.always_attack = always_attack
-        self._actions = [
-            [('attack', 1)],
-            [('forward', 1)],
-            # [('back', 1)],
-            # [('left', 1)],
-            # [('right', 1)],
-            # [('jump', 1)],
-            # [('forward', 1), ('attack', 1)],
-            # [('craft', 'planks')],
-            [('forward', 1), ('jump', 1)],
-            [('camera', [-self.camera_angle, 0])],
-            [('camera', [self.camera_angle, 0])],
-            [('camera', [0, self.camera_angle])],
-            [('camera', [0, -self.camera_angle])],
-        ]
-        self.actions = []
-        for actions in self._actions:
-            act = self.env.action_space.noop()
-            for a, v in actions:
-                act[a] = v
-            if self.always_attack:
-                act['attack'] = 1
-            self.actions.append(act)
-        self.action_space = gym.spaces.Discrete(len(self.actions))
-
-    def action(self, action):
-        return self.actions[action]
-
-class Actor(nn.Module):
-    def __init__(self, in_channels, out_channels, height, width, num_actions, device="cpu"):
-        super(Actor, self).__init__()
-        self.device = device
-        self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
-        self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.flatten = nn.Flatten()
-        height = (height - 4) // 2 
-        width = (width - 4) // 2 
-        input_shape = out_channels * height * width
-        self.fc = nn.Linear(input_shape, 128)
-        self.policy = nn.Linear(128, num_actions)
-
-    def forward(self, x):
-        x = self.prepare_input(x)
-        x = th.relu(self.fc(x))
-        logits = self.policy(x)
-        probs = th.softmax(logits, dim=-1)
-        action = th.multinomial(probs, num_samples=1).item()
-        log_prob = th.log(probs[0, action])
-        return action, log_prob, probs
-
-    def prepare_input(self, x):
-        if not isinstance(x, th.Tensor):
-            x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-        x = x.permute(0, 3, 1, 2)
-        x = th.relu(self.cnn1(x))
-        x = th.relu(self.cnn2(x))
-        x = self.pool(x)
-        x = self.flatten(x)
-        return x
-
-class Critic(nn.Module):
-    def __init__(self, in_channels, out_channels, height, width, device="cpu"):
-        super(Critic, self).__init__()
-        self.device = device
-        # Shared feature extraction layers with the Actor
-        self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1)
-        self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.flatten = nn.Flatten()
-        height = (height - 4) // 2 
-        width = (width - 4) // 2 
-        input_shape = out_channels * height * width
-        self.fc = nn.Linear(input_shape, 128)
-        self.value = nn.Linear(128, 1)
-
-    def forward(self, x):
-        x = self.prepare_input(x)
-        x = th.relu(self.fc(x))
-        value = self.value(x)
-        return value
-
-    def prepare_input(self, x):
-        if not isinstance(x, th.Tensor):
-            x = th.from_numpy(x.copy()).float().unsqueeze(0).to(self.device)
-        x = x.permute(0, 3, 1, 2)
-        x = th.relu(self.cnn1(x))
-        x = th.relu(self.cnn2(x))
-        x = self.pool(x)
-        x = self.flatten(x)
-        return x
-
-# Training Loop
-def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
-    env = gym.make(env_name)
-    env = PovOnlyObservation(env)
-    env = ActionShaping(env)
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
-    actor = Actor(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
-    critic = Critic(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
+    critic = Critic(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], device).to(device)
+    actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    
+    if load_model:
+        actor.load_state_dict(th.load("bc_model.pth"))
+
     actor_optimizer = th.optim.RMSprop(actor.parameters(), lr=lr)
     critic_optimizer = th.optim.RMSprop(critic.parameters(), lr=lr)
     
     global_step = 0
-    mean_rewards = []
     local_rewards_arr = []
     global_reward = 0
     episode = 0
@@ -139,52 +42,108 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
         total_reward = 0
         obs = env.reset()
         steps = 0
-        local_rewards = 0
-        while not done and steps < timesteps:
-            action, log_prob, _ = actor(obs)
-            value = critic(obs)
-            obs, reward, done, _ = env.step(action)
-            total_reward += reward
+        rewards = []
+        states = []
+        masks = []
+        values = []
+        updates = 0
 
-            # Get the value for the next state
+        while not done:
+            # normalize observations and permute shape
+            obs = obs.astype(np.float32) / 255.0
+            state = th.tensor(obs.copy(), dtype=th.float32).to(device)
+            state = state.unsqueeze(0).permute(0, 3, 1, 2)
+            
             with th.no_grad():
-                next_value = critic(obs) if not done else 0
+                action, log_prob, _ = actor(state)
+                value = critic(state)
+            next_obs, reward, done, _ = env.step(action)
 
-            # Calculate advantage and update models
-            advantage = reward + gamma * next_value - value
-            actor_loss = -log_prob * advantage.detach()
-            critic_loss = advantage.pow(2)
+            rewards.append(reward)
+            masks.append(1.0 - done)
+            values.append(value.item())
+            states.append(state)
 
-            # Update actor
-            actor_optimizer.zero_grad()
-            actor_loss.backward()
-            actor_optimizer.step()
-
-            # Update critic
-            critic_optimizer.zero_grad()
-            critic_loss.backward()
-            critic_optimizer.step()
-
-            steps += 1
+            obs = next_obs
+            total_reward += reward
             global_step += 1
-            local_rewards += reward
+            steps += 1
 
-        global_reward += total_reward
-        mean_rewards.append(local_rewards / steps)
-        local_rewards_arr.append(local_rewards)
-        print(f"Episode {episode}, total reward: {total_reward}")
+            # log rewards
+            wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
+            
+            # update actor and critic every 10 steps
+            if steps % 100 == 0 and total_reward > 0:
+                with th.no_grad():
+                    next_value = critic(state) if not done else 0
+                returns = compute_gae(next_value, rewards, masks, values, gamma)        
+
+                values = critic(th.stack(states).to(device).squeeze()).squeeze()
+                log_probs = actor(th.stack(states).to(device).squeeze())[1]
+                # clip log_probs to prevent NaN
+                log_probs = th.clamp(log_probs, -1e8, 1e8)
+                returns = th.tensor(returns, dtype=th.float32).to(device)
+                advantages = returns - values
+                # normalize advantages 
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                # add entropy to loss
+                if entropy_start > 0:
+                    entropy_coef = get_entropy_linear(entropy_start, 0.0, global_step, max_timesteps) if annealing else entropy_start
+                else:
+                    entropy_coef = 0.0
+                entropy = -th.mean(-log_probs)
+
+                # define huber loss
+                huber_loss = nn.SmoothL1Loss()
+
+                # update critic
+                critic_optimizer.zero_grad()
+                critic_loss = advantages.pow(2).mean() + huber_loss(values, returns)
+                critic_loss.backward()
+                # clip gradients
+                th.nn.utils.clip_grad_norm_(critic.parameters(), 0.5)
+                critic_optimizer.step()
+
+                # update actor
+                actor_optimizer.zero_grad()
+                actor_loss = -(advantages.detach() * log_probs).mean() + entropy_coef * entropy
+                actor_loss.backward()
+                # clip gradients
+                th.nn.utils.clip_grad_norm_(actor.parameters(), 0.5)
+                actor_optimizer.step()
+                # track updates
+                updates += 1
+
+                wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss, "steps": steps, "global_step": global_step, "updates": updates})
+                
+                # reset variables
+                rewards = []
+                states = []
+                masks = []
+                values = []
+
+            if done:
+                break
+
         episode += 1
+        print(f"Episode {episode}, total reward: {total_reward}")
+        global_reward += total_reward
+        local_rewards_arr.append(total_reward)
+
+        wandb.log({"episode": episode, "total_reward": total_reward, "steps": steps, "global_step": global_step, "global_reward": global_reward})
+
+        # checkpoint models
+        if episode % 10 == 0:
+            th.save(actor.state_dict(), f"{experiment_name}_actor_{episode}.pth")
+            th.save(critic.state_dict(), f"{experiment_name}_critic_{episode}.pth")
+
 
     print("*********************************************")
     print(f"Training took {time.time() - time_start} seconds")
     print(f"Mean reward per episode: {global_reward / episode}")
-
-    # Save graph of mean rewards over episodes
-    plt.plot(mean_rewards)
-    plt.xlabel("Episodes")
-    plt.ylabel("Mean Rewards")
-    plt.title("Mean Rewards vs Episodes")
-    plt.savefig("mean_rewards.png")
+    print(f"Total episodes: {episode}")
+    print("Total rewards during training: ", global_reward)
 
     # Save graph of local rewards over episodes
     plt.plot(local_rewards_arr)
@@ -194,27 +153,39 @@ def train_a2c(env_name, max_timesteps, gamma, lr, timesteps=3600):
     plt.savefig("local_rewards.png")
     env.close()
 
-    # Save model
-    th.save({'actor_state_dict': actor.state_dict(), 'critic_state_dict': critic.state_dict()}, "model.pth")
+    # Save models
+    th.save(actor.state_dict(), f"{experiment_name}_actor.pth")
+    th.save(critic.state_dict(), f"{experiment_name}_critic.pth")
 
-def test_a2c():
-    env = gym.make("MineRLTreechop-v0")
-    env = PovOnlyObservation(env)
-    env = ActionShaping(env)
+# Test A2C model
+def test_a2c(env, episodes, model_name, load_model=False):
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
-    model = ActorCritic(env.observation_space.shape[-1], 16, env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
-    model.load_state_dict(th.load("model.pth"))
-    model.eval()
-    obs = env.reset()
-    done = False
-    while not done:
-        action, _, _ = model(obs)
-        obs, _, done, _ = env.step(action)
-        env.render()
+    print("Using device: ", device)
+    actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    if load_model:
+        actor.load_state_dict(th.load(f"{model_name}.pth"))
+        
+    actor.eval()
+
+    global_reward = 0
+    for episode in range(episodes):
+        done = False
+        total_reward = 0
+        obs = env.reset()
+        # normalize observations and permute shape
+        obs = obs.astype(np.float32) / 255.0
+        state = th.tensor(obs.copy(), dtype=th.float32).to(device)
+        state = state.unsqueeze(0).permute(0, 3, 1, 2)
+        while not done:
+            action, _, _ = actor(state)
+            obs, reward, done, _ = env.step(action)
+            obs = obs.astype(np.float32) / 255.0
+            state = th.tensor(obs.copy(), dtype=th.float32).to(device)
+            state = state.unsqueeze(0).permute(0, 3, 1, 2)
+            total_reward += reward
+        global_reward += total_reward
+        print(f"Episode {episode}, total reward: {total_reward}")
+
+    print("*********************************************")
+    print(f"Mean reward per episode: {global_reward / episodes}")
     env.close()
-
-if __name__ == "__main__":
-    task = "MineRLTreechop-v0"
-    train_a2c(task, 2000000, 0.99, 0.0001)
-
-
