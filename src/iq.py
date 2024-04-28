@@ -136,6 +136,7 @@ def iq_loss(agent,
         loss_dict['regularize_loss'] = chi2_loss.item()
 
     loss_dict['total_loss'] = loss.item()
+    # print(f"Current Q: {current_Q.mean().item()}, Next V: {next_v.mean().item()}, Loss: {loss.item()}")
     return loss, loss_dict
 
 # IQ-Learn critic update
@@ -250,7 +251,7 @@ def train_a2c_iq(
             steps += 1
 
             # log rewards
-            # wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
+            wandb.log({"reward": reward, "total_reward": total_reward, "steps": steps, "global_step": global_step})
             
             # update actor and critic every batch_size steps
             if steps % batch_size == 0:
@@ -337,28 +338,30 @@ def train_a2c_iq(
 if __name__ == "__main__":
     freeze_support()
     env = make_env("MineRLTreechop-v0", always_attack=True)
-    wandb.init(project="minerl-a2c-iql", config={
+
+    config={
         "task": "MineRLTreechop-v0",
         "max_timesteps": 2000000,
         "gamma": 0.9999,
-        "learning_rate": 0.0001,
+        "learning_rate": 0.00001,
         "experiment_name": "a2c_iq",
         "load_model": False,
-        "entropy_start": 0.5,
+        "entropy_start": 0.75,
         "annealing": False
-    })
+    }
+
+    wandb.init(project="minerl-a2c-iql", config=config)
     train_a2c_iq(
-        max_timesteps=2000000, 
-        gamma=0.9999, 
-        lr=0.0001, 
-        env=env, 
-        data_dir="/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src", 
-        batch_size=100, 
-        experiment_name="a2c_iq", 
-        task="MineRLTreechop-v0", 
-        load_model=False,
-        entropy_start=0.5,
-        annealing=False
+        config["max_timesteps"],
+        config["gamma"],
+        config["learning_rate"],
+        env,
+        "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src",
+        experiment_name=config["experiment_name"],
+        task=config["task"],
+        load_model=config["load_model"],
+        entropy_start=config["entropy_start"],
+        annealing=config["annealing"]
     )
     # # let's first test sampling the expert data
     # data = minerl.data.make("MineRLTreechop-v0",  data_dir="/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src", num_workers=4)
