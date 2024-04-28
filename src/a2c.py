@@ -172,20 +172,23 @@ def test_a2c(env, episodes, model_name, load_model=False):
         done = False
         total_reward = 0
         obs = env.reset()
+        steps = 0
         # normalize observations and permute shape
         obs = obs.astype(np.float32) / 255.0
         state = th.tensor(obs.copy(), dtype=th.float32).to(device)
         state = state.unsqueeze(0).permute(0, 3, 1, 2)
-        while not done:
+        while not done and steps < 4000:
             action, _, _ = actor(state)
             obs, reward, done, _ = env.step(action)
             obs = obs.astype(np.float32) / 255.0
             state = th.tensor(obs.copy(), dtype=th.float32).to(device)
             state = state.unsqueeze(0).permute(0, 3, 1, 2)
             total_reward += reward
+            steps += 1
         global_reward += total_reward
         print(f"Episode {episode}, total reward: {total_reward}")
 
     print("*********************************************")
     print(f"Mean reward per episode: {global_reward / episodes}")
+    print(f"Variability: {np.std(global_reward)}")
     env.close()

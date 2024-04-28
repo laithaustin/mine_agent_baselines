@@ -82,13 +82,15 @@ def test_bc(env, episodes, model_path):
         done = False
         total_reward = 0
         obs = env.reset()
-        while not done:
+        steps = 0
+        while not done and steps < 4000:
             obs = obs.astype(np.float32) / 255.0
             state = th.tensor(obs.copy(), dtype=th.float32).to(device)
             state = state.unsqueeze(0).permute(0, 3, 1, 2)
             action, _, _ = actor(state)
             obs, reward, done, _ = env.step(action)
             total_reward += reward
+            steps += 1
         global_reward += total_reward
         print(f"Episode {episode}, total reward: {total_reward}")
 
