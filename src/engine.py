@@ -45,13 +45,14 @@ if __name__ == "__main__":
         annealing = args.annealing
         model_path = args.model_path
         episodes = args.episodes
+        render = args.render
         print(f"task: {task}, test: {test}, max_timesteps: {max_timesteps}, gamma: {gamma}, lr: {lr}, experiment_name: {experiment_name}, load_model: {load_model}, entropy_start: {entropy_start}")
 
         env = make_env(task, always_attack=True)
         if not test:
             train_a2c(max_timesteps, gamma, lr, env, experiment_name, load_model, entropy_start, annealing)
         else:
-            test_a2c(env, episodes, model_path, load_model)
+            test_a2c(env, episodes, model_path, load_model, render=render)
 
     elif method == 'bc':
         task = args.task
@@ -60,10 +61,11 @@ if __name__ == "__main__":
         model_path = args.model_path
         env = make_env(task, always_attack=True)
         test = args.test
+        render = args.render
         if not test:
             train_bc(DATA_DIR, task, epochs, lr)
         else:
-            test_bc(env, 10, model_path= model_path)
+            test_bc(env, 10, model_path= model_path, render=render)
 
     # env = make_env("MineRLTreechop-v0", always_attack=True)
     # train_bc(DATA_DIR, task, 5, 0.0001)

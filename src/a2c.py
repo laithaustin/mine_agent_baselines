@@ -158,7 +158,7 @@ def train_a2c(
     th.save(critic.state_dict(), f"{experiment_name}_critic.pth")
 
 # Test A2C model
-def test_a2c(env, episodes, model_name, load_model=False):
+def test_a2c(env, episodes, model_name, load_model=False, render=False):
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     print("Using device: ", device)
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
@@ -179,6 +179,8 @@ def test_a2c(env, episodes, model_name, load_model=False):
         state = state.unsqueeze(0).permute(0, 3, 1, 2)
         while not done and steps < 4000:
             action, _, _ = actor(state)
+            if render:
+                env.render()
             obs, reward, done, _ = env.step(action)
             obs = obs.astype(np.float32) / 255.0
             state = th.tensor(obs.copy(), dtype=th.float32).to(device)

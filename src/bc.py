@@ -69,7 +69,7 @@ def train_bc(
     del network
 
 # Test behavioral cloning model
-def test_bc(env, episodes, model_path):
+def test_bc(env, episodes, model_path, render=False):
     # load model from model_path
     device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
     actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device, True).to(device)
@@ -88,6 +88,8 @@ def test_bc(env, episodes, model_path):
             state = th.tensor(obs.copy(), dtype=th.float32).to(device)
             state = state.unsqueeze(0).permute(0, 3, 1, 2)
             action, _, _ = actor(state)
+            if render:
+                env.render()
             obs, reward, done, _ = env.step(action)
             total_reward += reward
             steps += 1
@@ -96,6 +98,5 @@ def test_bc(env, episodes, model_path):
 
     print("*********************************************")
     print(f"Mean reward: {global_reward / episodes}")
-    print("Total rewards during testing: ", global_reward)
 
     env.close()
