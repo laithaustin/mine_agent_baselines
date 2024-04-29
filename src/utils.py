@@ -22,6 +22,7 @@ def initParser():
     parser.add_argument('--annealing', type=bool, default=False, help="Anneal entropy")
     parser.add_argument('--model_path', type=str, default="model.pth", help="Path to retrieve model for testing")
     parser.add_argument('--episodes', type=int, default=100, help="Number of episodes to test")
+    parser.add_argument('--render', type=bool, default=False, help="Render environment")
     return parser
 
 def make_env(task, camera_angle=10, always_attack=False, simple_test=False):
