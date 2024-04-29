@@ -84,7 +84,7 @@ def test_bc(env, episodes, model_path, render=False):
     actor.eval()
 
     global_reward = 0
-
+    rewards = []
     for episode in range(episodes):
         done = False
         total_reward = 0
@@ -100,10 +100,11 @@ def test_bc(env, episodes, model_path, render=False):
             obs, reward, done, _ = env.step(action)
             total_reward += reward
             steps += 1
+        rewards.append(total_reward)
         global_reward += total_reward
         print(f"Episode {episode}, total reward: {total_reward}")
 
     print("*********************************************")
     print(f"Mean reward: {global_reward / episodes}")
-
+    print(f"Variability: {np.std(rewards)}")
     env.close()

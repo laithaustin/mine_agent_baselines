@@ -168,6 +168,7 @@ def test_a2c(env, episodes, model_name, load_model=False, render=False):
     actor.eval()
 
     global_reward = 0
+    rewards = []
     for episode in range(episodes):
         done = False
         total_reward = 0
@@ -187,10 +188,11 @@ def test_a2c(env, episodes, model_name, load_model=False, render=False):
             state = state.unsqueeze(0).permute(0, 3, 1, 2)
             total_reward += reward
             steps += 1
+        rewards.append(total_reward)
         global_reward += total_reward
         print(f"Episode {episode}, total reward: {total_reward}")
 
     print("*********************************************")
     print(f"Mean reward per episode: {global_reward / episodes}")
-    print(f"Variability: {np.std(global_reward)}")
+    print(f"Variability: {np.std(rewards)}")
     env.close()
