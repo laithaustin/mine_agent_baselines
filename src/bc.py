@@ -5,6 +5,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from models.Actor import Actor
 from utils import dataset_action_batch_to_actions
+import matplotlib.pyplot as plt
 
 # Training loop for behavioral cloning
 def train_bc(
@@ -65,6 +66,12 @@ def train_bc(
             losses.clear()
 
     th.save(network.state_dict(), "bc_model.pth")
+    # plot loss
+    plt.plot(losses)
+    plt.xlabel("Iteration")
+    plt.ylabel("Loss")
+    plt.title("Behavioral Cloning Loss")
+    plt.savefig("bc_loss.png")
     del data
     del network
 
