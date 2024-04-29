@@ -17,30 +17,47 @@ import wandb
 import gym
 from multiprocessing import freeze_support
 import os
+from torch.autograd import Variable, grad
 
-def grad_pen(expert_states, expert_actions, policy_states, policy_actions, lambda_gp, critic):
+def interpolate_expert_policy(expert_obs, expert_action, policy_obs, policy_action):
     """
-    Gradient penalty for Wasserstein_1 metric.
+    Create interpolation between expert and policy data.
     """
-    expert_states.requires_grad_(True)
-    expert_actions.requires_grad_(True)
-    policy_states.requires_grad_(True)
-    policy_actions.requires_grad_(True)
+    # Generate random epsilon for mixing terms
+    eps = th.rand(expert_obs.size(0), 1, 1, 1, device=expert_obs.device)
+    eps = eps.expand_as(expert_obs)
+    eps2 = th.rand(expert_action.size(0), device=expert_action.device)
 
-    expert_Q = th.tensor(critic.getQ(expert_states, expert_actions), dtype=th.float32, requires_grad=True)
-    policy_Q = th.tensor(critic.getQ(policy_states, policy_actions), dtype=th.float32, requires_grad=True)
+    # Interpolate observations and actions
+    mixed_obs = eps * expert_obs + (1 - eps) * policy_obs
+    mixed_actions = eps2 * expert_action + (1 - eps2) * policy_action
+    return mixed_obs, mixed_actions
 
-    # Calculate gradients per data point
-    expert_grad = th.autograd.grad(expert_Q, expert_states, grad_outputs=th.ones_like(expert_Q), create_graph=True, retain_graph=True, allow_unused=True)[0]
-    policy_grad = th.autograd.grad(policy_Q, policy_states, grad_outputs=th.ones_like(policy_Q), create_graph=True, retain_graph=True, allow_unused=True)[0]
+def grad_pen(expert_obs, expert_action, policy_obs, policy_action, lambda_gp, agent):
+    """
+    Calculate the gradient penalty for enforcing Wasserstein-1 Lipschitz constraint.
+    """
+    mixed_obs, mixed_actions = interpolate_expert_policy(expert_obs, expert_action, policy_obs, policy_action)
 
-    # Compute per-example norms
-    expert_grad_norm = expert_grad.view(expert_grad.size(0), -1).norm(2, dim=1)
-    policy_grad_norm = policy_grad.view(policy_grad.size(0), -1).norm(2, dim=1)
+    # Make sure we can compute gradients for mixed samples
+    mixed_obs.requires_grad_(True)
+    mixed_actions.requires_grad_(True)
 
-    # Compute penalty
-    grad_penalty = lambda_gp * ((expert_grad_norm - 1) ** 2).mean() + ((policy_grad_norm - 1) ** 2).mean()
-    return grad_penalty
+    # Calculate critic output for mixed data
+    mixed_scores = agent.getQ(mixed_obs, mixed_actions)
+
+    # Compute gradients with respect to mixed samples
+    gradients = grad(outputs=mixed_scores, inputs=[mixed_obs, mixed_actions],
+                     grad_outputs=th.ones_like(mixed_scores),
+                     create_graph=True, retain_graph=True, only_inputs=True, allow_unused=True)
+
+    # Flatten gradients to calculate norm across all dimensions
+    gradients = th.cat([g.view(g.size(0), -1) for g in gradients[0]], dim=1)
+    gradient_norm = th.sqrt(th.sum(gradients ** 2, dim=1) + 1e-12)  # add small epsilon to avoid division by zero
+
+    # Compute gradient penalty as the mean of the squared differences from 1
+    gradient_penalty = lambda_gp * th.mean((gradient_norm - 1) ** 2)
+    return gradient_penalty
 
 # Full IQ-Learn objective with other divergences and options
 def iq_loss(agent,
@@ -108,14 +125,14 @@ def iq_loss(agent,
     else:
         raise ValueError(f'This sampling method is not implemented: {loss_type}')
 
-    # # add a gradient penalty to loss (Wasserstein_1 metric)
-    # gp_loss = grad_pen(obs[is_expert.squeeze(1), ...],
-    #                                     action[is_expert.squeeze(1), ...],
-    #                                     obs[~is_expert.squeeze(1), ...],
-    #                                     action[~is_expert.squeeze(1), ...],
-    #                                     lambda_gp, agent)
-    # loss_dict['gp_loss'] = gp_loss.item()
-    # loss += gp_loss
+    # add a gradient penalty to loss (Wasserstein_1 metric)
+    gp_loss = grad_pen(obs[is_expert.squeeze(1), ...],
+                                        action[is_expert.squeeze(1), ...],
+                                        obs[~is_expert.squeeze(1), ...],
+                                        action[~is_expert.squeeze(1), ...],
+                                        lambda_gp, agent)
+    loss_dict['gp_loss'] = gp_loss.item()
+    loss += gp_loss
 
     # if div == "chi":  # TODO: Deprecate method.chi argument for method.div
     #     # Use χ2 divergence (calculate the regularization term for IQ loss using expert states) (works offline)
@@ -183,7 +200,7 @@ def train_a2c_iq(
         lr,
         env,
         data_dir,
-        batch_size=100,
+        batch_size=500,
         experiment_name="a2c",
         task = "MineRLTreechop-v0",
         load_model=False,
@@ -199,7 +216,7 @@ def train_a2c_iq(
     # get cpu count from os
     data = minerl.data.make(task,  data_dir=data_dir, num_workers=os.cpu_count()) # todo: update based on cpu cores
     iterator = minerl.data.BufferedBatchIter(data)
-    expert_data = np.array([[s, a, r, ns, d] for s, a, r, ns, d in iterator.buffered_batch_iter(batch_size=100, num_epochs=1)])
+    expert_data = np.array([[s, a, r, ns, d] for s, a, r, ns, d in iterator.buffered_batch_iter(batch_size=batch_size, num_epochs=1)])
 
     if load_model:
         actor.load_state_dict(th.load("bc_model.pth"))
@@ -342,9 +359,9 @@ if __name__ == "__main__":
     config={
         "task": "MineRLTreechop-v0",
         "max_timesteps": 2000000,
-        "gamma": 0.9999,
+        "gamma": 0.99999,
         "learning_rate": 0.00001,
-        "experiment_name": "a2c_iq",
+        "experiment_name": "a2c_iq_yolo",
         "load_model": False,
         "entropy_start": 0.75,
         "annealing": False
@@ -361,7 +378,8 @@ if __name__ == "__main__":
         task=config["task"],
         load_model=config["load_model"],
         entropy_start=config["entropy_start"],
-        annealing=config["annealing"]
+        annealing=config["annealing"],
+        batch_size=32
     )
     # # let's first test sampling the expert data
     # data = minerl.data.make("MineRLTreechop-v0",  data_dir="/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src", num_workers=4)
