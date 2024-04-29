@@ -33,6 +33,11 @@ class Critic(nn.Module):
     def getQ(self, x, action):
         # append action to the input
         x = self.prepare_input(x)
+        # Ensure action is of type Long
+        if not action.dtype == th.int64:
+            action = action.to(th.int64)  # Ensure action is of type Long
+        action = action.clamp(0, self.num_actions - 1)  # Ensure actions are within the valid range
+
         action = th.zeros((x.shape[0], self.num_actions), device=self.device).scatter(1, action.unsqueeze(1).to(th.int64), 1).to(th.float32)
         x = th.cat([x, action], dim=1)
         x = th.relu(self.fc2(x))
