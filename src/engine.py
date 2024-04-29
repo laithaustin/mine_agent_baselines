@@ -62,10 +62,11 @@ if __name__ == "__main__":
         env = make_env(task, always_attack=True)
         test = args.test
         render = args.render
+        episodes = args.episodes
         if not test:
             train_bc(DATA_DIR, task, epochs, lr)
         else:
-            test_bc(env, 10, model_path= model_path, render=render)
+            test_bc(env, episodes, model_path= model_path, render=render)
 
     # env = make_env("MineRLTreechop-v0", always_attack=True)
     # train_bc(DATA_DIR, task, 5, 0.0001)
