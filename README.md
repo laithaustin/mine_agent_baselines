@@ -44,7 +44,7 @@ dependencies {
 5. Now you should be able to pip install using this directory and have no issues.
 
 
-For training and testing various different models - use the test.sh file in order to run the appropriate model that you are interested in using:
+For training and testing various different models - use the test.sh file in order to run the appropriate model that you are interested in using. The file has examples for each of the scripts that you can run for the various purposes you may have:
 ```bash test.sh```
 
 
