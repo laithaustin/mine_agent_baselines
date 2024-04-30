@@ -1,7 +1,7 @@
 # Mine Agent Final Project
 Our src folder contains all of our relevant code. The engine.py is our main way of parsing arguments that are passed to our bash script - which we use to run our various experiments. Each of the other files has the main code for the various algorithms that we used for the given task: iq.py - the inverse q learning code that follows the example code from the paper, a2c.py - the a2c algorithm for our use case with the ability to load a pretrained model, and bc.py - the code for training and testing behavorial cloning.
 
-***************Installation Guide***********************
+## Installation Guide
 First make sure to have all of the needed requirements using our requirements.txt file.
 ```pip install -r requirements.txt```
 
