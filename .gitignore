@@ -4,3 +4,9 @@ train_videos
 runs
 logs
 *.mp4
+MineRLTreechop-v0
+download
+*.pth
+*.zip
+.gitignore
+*.pyc
