@@ -1,6 +1,14 @@
 # Mine Agent Final Project
 Our src folder contains all of our relevant code. The engine.py is our main way of parsing arguments that are passed to our bash script - which we use to run our various experiments. Each of the other files has the main code for the various algorithms that we used for the given task: iq.py - the inverse q learning code that follows the example code from the paper, a2c.py - the a2c algorithm for our use case with the ability to load a pretrained model, and bc.py - the code for training and testing behavorial cloning.
 
+For a quick start on testing our best performing model in the treechop environment, make sure to first follow in the installation instructions in the mineRL repo and install our requirements.txt.
+
+Then you can run the following within the src file to run our best performing model in the TreeChop environement.
+
+```bash test.sh```
+
+All of our navigation code and baseline experiments can be found in the experiments/ subfolder within src/.
+
 ## Installation Guide
 First make sure to have all of the needed requirements using our requirements.txt file.
 ```pip install -r requirements.txt```
