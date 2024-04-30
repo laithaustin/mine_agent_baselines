@@ -383,34 +383,34 @@ def test_iq(env, episodes, model_path, render=False):
     print(f"Variability: {np.std(rewards)}")
     env.close()
 
-# Train A2C with IQ-Learn
-if __name__ == "__main__":
-    freeze_support()
-    env = make_env("MineRLTreechop-v0", always_attack=True)
+# # Train A2C with IQ-Learn
+# if __name__ == "__main__":
+#     freeze_support()
+#     env = make_env("MineRLTreechop-v0", always_attack=True)
 
-    config={
-        "task": "MineRLTreechop-v0",
-        "max_timesteps": 2000000,
-        "gamma": 0.99999,
-        "learning_rate": 0.00001,
-        "experiment_name": "a2c_iq_yolo",
-        "load_model": False,
-        "entropy_start": 0.75,
-        "annealing": False
-    }
+#     config={
+#         "task": "MineRLTreechop-v0",
+#         "max_timesteps": 2000000,
+#         "gamma": 0.99999,
+#         "learning_rate": 0.00001,
+#         "experiment_name": "a2c_iq_yolo",
+#         "load_model": False,
+#         "entropy_start": 0.75,
+#         "annealing": False
+#     }
 
-    # wandb.init(project="minerl-a2c-iql", config=config)
-    # train_a2c_iq(
-    #     config["max_timesteps"],
-    #     config["gamma"],
-    #     config["learning_rate"],
-    #     env,
-    #     "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src",
-    #     experiment_name=config["experiment_name"],
-    #     task=config["task"],
-    #     load_model=config["load_model"],
-    #     entropy_start=config["entropy_start"],
-    #     annealing=config["annealing"],
-    #     batch_size=32
-    # )
-    test_iq(env, 100, f"a2c_iq_final/{config['experiment_name']}_actor_iq.pth", render=False) 
+#     # wandb.init(project="minerl-a2c-iql", config=config)
+#     # train_a2c_iq(
+#     #     config["max_timesteps"],
+#     #     config["gamma"],
+#     #     config["learning_rate"],
+#     #     env,
+#     #     "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src",
+#     #     experiment_name=config["experiment_name"],
+#     #     task=config["task"],
+#     #     load_model=config["load_model"],
+#     #     entropy_start=config["entropy_start"],
+#     #     annealing=config["annealing"],
+#     #     batch_size=32
+#     # )
+#     test_iq(env, 100, f"a2c_iq_final/{config['experiment_name']}_actor_iq.pth", render=False) 

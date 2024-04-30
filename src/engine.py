@@ -13,6 +13,7 @@ import wandb
 from utils import PovOnlyObservation, ActionShaping, compute_gae, get_entropy_linear, make_env, dataset_action_batch_to_actions, initParser
 from bc import train_bc, test_bc
 from a2c import train_a2c, test_a2c
+from iq import train_a2c_iq, test_iq
 
 DATA_DIR = "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src"
 BATCH_SIZE = 5
@@ -67,6 +68,39 @@ if __name__ == "__main__":
             train_bc(DATA_DIR, task, epochs, lr)
         else:
             test_bc(env, episodes, model_path= model_path, render=render)
+
+    elif method == 'iq':
+        task = args.task
+        max_timesteps = args.max_timesteps
+        gamma = args.gamma
+        lr = args.learning_rate
+        experiment_name = args.experiment_name
+        load_model = args.load_model
+        entropy_start = args.entropy_start
+        test = args.test
+        annealing = args.annealing
+        model_path = args.model_path
+        episodes = args.episodes
+        render = args.render
+        env = make_env(task, always_attack=True)
+
+        if not test:
+            train_a2c_iq(
+                max_timesteps,
+                gamma,
+                lr,
+                env,
+                model_path,
+                experiment_name,
+                task,
+                load_model,
+                entropy_start=entropy_start,
+                annealing=annealing,
+                batch_size=32
+            )
+
+        else:
+            test_iq(env, episodes, model_path= model_path, render=render) 
 
     # env = make_env("MineRLTreechop-v0", always_attack=True)
     # train_bc(DATA_DIR, task, 5, 0.0001)
