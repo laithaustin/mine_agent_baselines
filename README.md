@@ -7,7 +7,7 @@ Then you can run the following within the src file to run our best performing mo
 
 ```bash test.sh```
 
-All of our navigation code and baseline experiments can be found in the experiments/ subfolder within src/.
+All of our navigation code and baseline experiments can be found in ```src/experiments```
 
 ## Installation Guide
 First make sure to have all of the needed requirements using our requirements.txt file.
