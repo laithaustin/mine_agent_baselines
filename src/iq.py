@@ -351,6 +351,38 @@ def train_a2c_iq(
     th.save(actor.state_dict(), f"{experiment_name}_actor_iq.pth")
     th.save(critic.state_dict(), f"{experiment_name}_critic_iq.pth") 
 
+# test IQ-Learn
+def test_iq(env, episodes, model_path, render=False):
+    device = "cuda" if th.cuda.is_available() else "mps" if th.backends.mps.is_available() else "cpu"
+    actor = Actor(env.observation_space.shape[-1], env.observation_space.shape[0], env.observation_space.shape[1], env.action_space.n, device).to(device)
+    actor.load_state_dict(th.load(model_path))
+    actor.eval()
+
+    global_reward = 0
+    rewards = []
+    for episode in range(episodes):
+        done = False
+        total_reward = 0
+        obs = env.reset()
+        steps = 0
+        while not done and steps < 4000:
+            obs = obs.astype(np.float32) / 255.0
+            state = th.tensor(obs.copy(), dtype=th.float32).to(device).unsqueeze(0).permute(0, 3, 1, 2)
+            action, _, _ = actor(state)
+            if render:
+                env.render()
+            obs, reward, done, _ = env.step(action)
+            total_reward += reward
+            steps += 1
+        rewards.append(total_reward)
+        global_reward += total_reward
+        print(f"Episode {episode}, total reward: {total_reward}")
+
+    print("*********************************************")
+    print(f"Mean reward: {global_reward / episodes}")
+    print(f"Variability: {np.std(rewards)}")
+    env.close()
+
 # Train A2C with IQ-Learn
 if __name__ == "__main__":
     freeze_support()
@@ -367,32 +399,18 @@ if __name__ == "__main__":
         "annealing": False
     }
 
-    wandb.init(project="minerl-a2c-iql", config=config)
-    train_a2c_iq(
-        config["max_timesteps"],
-        config["gamma"],
-        config["learning_rate"],
-        env,
-        "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src",
-        experiment_name=config["experiment_name"],
-        task=config["task"],
-        load_model=config["load_model"],
-        entropy_start=config["entropy_start"],
-        annealing=config["annealing"],
-        batch_size=32
-    )
-    # # let's first test sampling the expert data
-    # data = minerl.data.make("MineRLTreechop-v0",  data_dir="/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src", num_workers=4)
-    # iterator = minerl.data.BufferedBatchIter(data)
-    # batch = np.array([[s, a, r, ns, d] for s, a, r, ns, d in iterator.buffered_batch_iter(batch_size=100, num_epochs=1)])
-    # # randomly choose batch_size samples from batch
-    # # idx = np.random.choice(batch.shape[0], 100, replace=False)
-    # # batch = batch[idx]
-    # print("batch size: ", len(batch))
-    # # grab first state
-    # state = th.tensor(batch[0, 0]["pov"].squeeze().astype(np.float32), dtype=th.float32).unsqueeze(0).permute(0, 3, 1, 2)
-    # print("state shape: ", state.shape)
-    # # grab actions
-    # print(dataset_action_batch_to_actions(batch[:, 1]).shape)
-    # # actions = th.tensor(dataset_action_batch_to_actions(batch[0, 1]), dtype=th.float32)
-    # # print("actions shape: ", actions.shape)
+    # wandb.init(project="minerl-a2c-iql", config=config)
+    # train_a2c_iq(
+    #     config["max_timesteps"],
+    #     config["gamma"],
+    #     config["learning_rate"],
+    #     env,
+    #     "/Users/laithaustin/Documents/classes/rl/mine_agent/MineRL2021-Intro-baselines/src",
+    #     experiment_name=config["experiment_name"],
+    #     task=config["task"],
+    #     load_model=config["load_model"],
+    #     entropy_start=config["entropy_start"],
+    #     annealing=config["annealing"],
+    #     batch_size=32
+    # )
+    test_iq(env, 100, f"a2c_iq_final/{config['experiment_name']}_actor_iq.pth", render=False) 
