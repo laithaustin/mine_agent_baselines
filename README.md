@@ -15,7 +15,7 @@ https://drive.google.com/file/d/1z9i21_GQrewE0zIgrpHY5kKMZ5IzDt6U/view?usp=drive
 ```cd minerl```
 ```git checkout v0.4```
 
-3. Go into the build.gradle file 
+3. Go into the build.gradle file
 ```cd minerl/Malmo/Minecraft```
 
 4. Then update the build.gradle in the following way:
